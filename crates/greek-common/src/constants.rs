@@ -19,7 +19,8 @@ pub const MAX_BACKUP_SIZE_MB: u64 = 100;
 #[cfg(target_os = "windows")]
 pub const REGISTRY_UNINSTALL_PATH_32: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall";
 #[cfg(target_os = "windows")]
-pub const REGISTRY_UNINSTALL_PATH_64: &str = r"Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall";
+pub const REGISTRY_UNINSTALL_PATH_64: &str =
+    r"Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall";
 
 /// Common application directories
 pub const COMMON_APP_DIRS: &[&str] = &[
@@ -42,3 +43,25 @@ pub const MAX_FPS: u32 = 60;
 /// Version information
 pub const APPLICATION_NAME: &str = "reek-uninstaller";
 pub const APPLICATION_DISPLAY_NAME: &str = "REEK Ultimate Uninstaller";
+
+/// Protected paths that should never be deleted
+pub const PROTECTED_PATHS: &[&str] = &[
+    r"C:\Windows",
+    r"C:\Windows\System32",
+    r"C:\Program Files\WindowsApps",
+    r"C:\Program Files",
+    r"C:\Program Files (x86)",
+    r"C:\Windows\SysWOW64",
+    r"\SystemRoot",
+    r"\Windows\System32\drivers",
+    r"/System",
+    r"/usr",
+    r"/bin",
+    r"/sbin",
+    r"/lib",
+    r"/lib64",
+    r"/usr/bin",
+    r"/usr/sbin",
+    r"/usr/lib",
+    r"/usr/lib64",
+];

@@ -6,21 +6,16 @@
 db-path = "~/.cargo/advisory-db"
 # The url(s) of the advisory databases to use
 db-urls = ["https://github.com/rustsec/advisory-db"]
-# The lint level for security vulnerabilities
-vulnerability = "deny"
-# The lint level for unmaintained crates
-unmaintained = "warn"
-# The lint level for crates that have been yanked from their source registry
-yanked = "warn"
-# The lint level for crates with security notices
-notice = "warn"
-# A list of advisory IDs to ignore
+# All vulnerability/unsound/notice advisories are treated as errors by default.
+# What happens when a crate with a yanked version is encountered.
+yanked = "deny"
+# Unmaintained advisories fail if they apply to a workspace crate (direct dep).
+unmaintained = "workspace"
+# A list of advisory IDs to ignore (only for triaged false positives / no fix available)
 ignore = []
 
 [licenses]
-# The lint level for crates which do not have a detectable license
-unlicensed = "deny"
-# List of explicitly allowed licenses
+# All licenses are denied unless explicitly listed in `allow`.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -30,25 +25,26 @@ allow = [
     "ISC",
     "Unicode-DFS-2016",
     "Unicode-3.0",
+    "BSL-1.0",
+    "Zlib",
+    "OpenSSL",
+    "MPL-2.0",
 ]
-# List of explicitly disallowed licenses
-deny = [
-    "GPL-2.0",
-    "GPL-3.0",
-    "AGPL-3.0",
-]
-# Lint level used when no other predicates are matched
-copyleft = "warn"
-# Blanket approval or denial for OSI-approved or FSF Free/Libre licenses
-allow-osi-fsf-free = "both"
-# Lint level used when the license is in the SPDX list but not in the allowed list
-default = "deny"
+# Lint level used when a license in `allow` is not actually used in the graph.
+unused-allowed-license = "warn"
+# Askalono confidence required to accept a detected license.
+confidence-threshold = 0.8
+# Workspace crates carry the workspace MIT OR Apache-2.0 license.
+[licenses.private]
+ignore = true
 
 [bans]
-# Lint level for when multiple versions of the same crate are detected
+# Lint level for when multiple versions of the same crate are detected.
+# Kept at "warn" because the dependency tree legitimately contains multiple
+# major versions of transitive crates (e.g. thiserror 1.x + 2.x, windows-sys).
 multiple-versions = "warn"
 # Lint level for when a crate version requirement is `*`
-wildcards = "allow"
+wildcards = "deny"
 # The graph highlighting used when creating dotgraphs for crates
 highlight = "all"
 # List of crates that are allowed
@@ -62,9 +58,9 @@ skip-tree = []
 
 [sources]
 # Lint level for what to happen when a crate from a crate registry that is not in the allow list is encountered
-unknown-registry = "warn"
+unknown-registry = "deny"
 # Lint level for what to happen when a crate from a git repository that is not in the allow list is encountered
-unknown-git = "warn"
+unknown-git = "deny"
 # List of URLs for allowed crate registries
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # List of URLs for allowed Git repositories

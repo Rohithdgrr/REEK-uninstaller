@@ -1,13 +1,16 @@
 // UI rendering for the TUI
 
+use crate::app::{
+    app_avatar, app_icon_pixel_color, app_icon_pixels, context_menu_items, OperationState,
+    ScanStatus, TuiApp,
+};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap, Clear},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
     Frame,
 };
-use crate::app::{TuiApp, ScanStatus, OperationState, context_menu_items, app_avatar, app_icon_pixels, app_icon_pixel_color};
 
 pub fn render(f: &mut Frame, app: &TuiApp) {
     let area = f.area();
@@ -15,7 +18,7 @@ pub fn render(f: &mut Frame, app: &TuiApp) {
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Header
+            Constraint::Length(3), // Header
             Constraint::Min(0),    // Content
             Constraint::Length(3), // Footer
         ])
@@ -25,15 +28,31 @@ pub fn render(f: &mut Frame, app: &TuiApp) {
     render_content(f, main_chunks[1], app);
     render_footer(f, main_chunks[2], app);
 
-    if app.is_showing_help() { render_help(f); }
-    if app.show_context_menu() { render_context_menu(f, app); }
+    if app.is_showing_help() {
+        render_help(f);
+    }
+    if app.show_context_menu() {
+        render_context_menu(f, app);
+    }
     if let Some(op) = app.current_operation() {
         match op {
-            OperationState::Scanning => render_overlay(f, "Scanning...", "Reading Windows Registry..."),
-            OperationState::Uninstalling(name) => render_overlay(f, "Uninstalling...", &format!("Removing {}...", name)),
-            OperationState::ForceRemoving(name) => render_overlay(f, "Force Removing...", &format!("Deleting {}...", name)),
-            OperationState::AnalyzingLeftovers(name) => render_overlay(f, "Analyzing Leftovers...", &format!("Scanning for {} leftovers...", name)),
-            OperationState::AddingToBatch(name) => render_overlay(f, "Adding to Batch...", &format!("Adding {}...", name)),
+            OperationState::Scanning => {
+                render_overlay(f, "Scanning...", "Reading Windows Registry...")
+            }
+            OperationState::Uninstalling(name) => {
+                render_overlay(f, "Uninstalling...", &format!("Removing {}...", name))
+            }
+            OperationState::ForceRemoving(name) => {
+                render_overlay(f, "Force Removing...", &format!("Deleting {}...", name))
+            }
+            OperationState::AnalyzingLeftovers(name) => render_overlay(
+                f,
+                "Analyzing Leftovers...",
+                &format!("Scanning for {} leftovers...", name),
+            ),
+            OperationState::AddingToBatch(name) => {
+                render_overlay(f, "Adding to Batch...", &format!("Adding {}...", name))
+            }
         }
     }
 }
@@ -54,24 +73,50 @@ fn render_header(f: &mut Frame, area: Rect, app: &TuiApp) {
     let selected = app.get_selected_apps().len();
 
     let mut spans = vec![
-        Span::styled("  REEK ", Style::default().fg(Color::Rgb(30, 64, 175)).add_modifier(Modifier::BOLD)),
-        Span::styled("Uninstaller  ", Style::default().fg(Color::Rgb(55, 100, 200))),
-        Span::styled(format!("{} apps", total), Style::default().fg(Color::Rgb(30, 64, 175)).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "  REEK ",
+            Style::default()
+                .fg(Color::Rgb(30, 64, 175))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "Uninstaller  ",
+            Style::default().fg(Color::Rgb(55, 100, 200)),
+        ),
+        Span::styled(
+            format!("{} apps", total),
+            Style::default()
+                .fg(Color::Rgb(30, 64, 175))
+                .add_modifier(Modifier::BOLD),
+        ),
     ];
 
     if selected > 0 {
-        spans.push(Span::styled(format!("  |  {} selected", selected), Style::default().fg(Color::Rgb(16, 185, 129))));
+        spans.push(Span::styled(
+            format!("  |  {} selected", selected),
+            Style::default().fg(Color::Rgb(16, 185, 129)),
+        ));
     }
 
     spans.push(Span::raw("  "));
 
     // Show status message if present
     if let Some((msg, is_err)) = app.status_message() {
-        let color = if *is_err { Color::Rgb(239, 68, 68) } else { Color::Rgb(16, 185, 129) };
-        spans.push(Span::styled(format!("  {}  ", msg), Style::default().fg(color)));
+        let color = if *is_err {
+            Color::Rgb(239, 68, 68)
+        } else {
+            Color::Rgb(16, 185, 129)
+        };
+        spans.push(Span::styled(
+            format!("  {}  ", msg),
+            Style::default().fg(color),
+        ));
     }
 
-    f.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)), inner);
+    f.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
+        inner,
+    );
 }
 
 // ── Content ──────────────────────────────────────────────────────────────
@@ -99,7 +144,11 @@ fn render_app_list(f: &mut Frame, area: Rect, app: &TuiApp) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border))
         .title(format!(" {} apps ", app.get_filtered_apps().len()))
-        .title_style(Style::default().fg(Color::Rgb(59, 130, 246)).add_modifier(Modifier::BOLD));
+        .title_style(
+            Style::default()
+                .fg(Color::Rgb(59, 130, 246))
+                .add_modifier(Modifier::BOLD),
+        );
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -108,11 +157,29 @@ fn render_app_list(f: &mut Frame, area: Rect, app: &TuiApp) {
     let header_area = Rect::new(inner.x, inner.y, inner.width, header_h);
     let col_widths = compute_column_widths(inner.width);
 
-    let hdr_style = Style::default().fg(header_fg).bg(header_bg).add_modifier(Modifier::BOLD);
-    let headers = ["", "Icon", "Name", "Version", "Publisher", "Size", "CPU", "RAM"];
+    let hdr_style = Style::default()
+        .fg(header_fg)
+        .bg(header_bg)
+        .add_modifier(Modifier::BOLD);
+    let headers = [
+        "",
+        "Icon",
+        "Name",
+        "Version",
+        "Publisher",
+        "Size",
+        "CPU",
+        "RAM",
+    ];
     let aligns = [
-        Alignment::Left, Alignment::Center, Alignment::Left, Alignment::Left,
-        Alignment::Left, Alignment::Right, Alignment::Right, Alignment::Right,
+        Alignment::Left,
+        Alignment::Center,
+        Alignment::Left,
+        Alignment::Left,
+        Alignment::Left,
+        Alignment::Right,
+        Alignment::Right,
+        Alignment::Right,
     ];
 
     let mut x = inner.x;
@@ -127,7 +194,12 @@ fn render_app_list(f: &mut Frame, area: Rect, app: &TuiApp) {
     }
 
     // List body
-    let body_area = Rect::new(inner.x, inner.y + header_h, inner.width, inner.height.saturating_sub(header_h));
+    let body_area = Rect::new(
+        inner.x,
+        inner.y + header_h,
+        inner.width,
+        inner.height.saturating_sub(header_h),
+    );
     let filtered = app.get_filtered_apps();
     let sel = app.get_selected_index();
     let checked = app.get_selected_apps();
@@ -141,14 +213,19 @@ fn render_app_list(f: &mut Frame, area: Rect, app: &TuiApp) {
             "No applications match."
         };
         f.render_widget(
-            Paragraph::new(msg).alignment(Alignment::Center).style(Style::default().fg(Color::Rgb(148, 163, 184))),
+            Paragraph::new(msg)
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::Rgb(148, 163, 184))),
             body_area,
         );
         return;
     }
 
-    let items: Vec<ListItem> = filtered.iter().enumerate()
-        .skip(scroll).take(visible_h)
+    let items: Vec<ListItem> = filtered
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible_h)
         .map(|(i, app_item)| {
             let is_sel = i == sel;
             let is_chk = checked.contains(&i);
@@ -161,7 +238,11 @@ fn render_app_list(f: &mut Frame, area: Rect, app: &TuiApp) {
                 (Color::Rgb(255, 255, 255), Color::Rgb(44, 62, 80))
             };
 
-            let muted = if is_sel { Color::Rgb(200, 215, 240) } else { Color::Rgb(120, 130, 150) };
+            let muted = if is_sel {
+                Color::Rgb(200, 215, 240)
+            } else {
+                Color::Rgb(120, 130, 150)
+            };
             let bg = row_bg;
 
             let (avatar, avatar_color) = app_avatar(app_item);
@@ -176,7 +257,16 @@ fn render_app_list(f: &mut Frame, area: Rect, app: &TuiApp) {
             let pub_trunc = truncate(pub_str, col_widths[4] as usize - 1);
 
             let mut spans: Vec<Span> = Vec::new();
-            spans.push(Span::styled(format!("{} ", check), Style::default().fg(if is_chk { Color::Rgb(16, 185, 129) } else { muted }).bg(bg)));
+            spans.push(Span::styled(
+                format!("{} ", check),
+                Style::default()
+                    .fg(if is_chk {
+                        Color::Rgb(16, 185, 129)
+                    } else {
+                        muted
+                    })
+                    .bg(bg),
+            ));
 
             // Real icon: 8 half-block pixels (8x2 of the actual icon), else colored letter
             if let Some(px) = &px {
@@ -192,28 +282,64 @@ fn render_app_list(f: &mut Frame, area: Rect, app: &TuiApp) {
             } else {
                 spans.push(Span::styled(
                     format!(" {} ", avatar),
-                    Style::default().fg(if is_sel { Color::White } else { avatar_color }).add_modifier(Modifier::BOLD).bg(bg),
+                    Style::default()
+                        .fg(if is_sel { Color::White } else { avatar_color })
+                        .add_modifier(Modifier::BOLD)
+                        .bg(bg),
                 ));
-                spans.push(Span::raw(" ".repeat(col_widths[1].saturating_sub(4) as usize)));
+                spans.push(Span::raw(
+                    " ".repeat(col_widths[1].saturating_sub(4) as usize),
+                ));
             }
 
-            spans.push(Span::styled(format!("{:<width$}", name_trunc, width = col_widths[2] as usize - 1), Style::default().fg(row_fg).bg(bg)));
-            spans.push(Span::styled(format!("{:<width$}", ver, width = col_widths[3] as usize), Style::default().fg(muted).bg(bg)));
-            spans.push(Span::styled(format!("{:<width$}", pub_trunc, width = col_widths[4] as usize), Style::default().fg(muted).bg(bg)));
-            spans.push(Span::styled(format!("{:>width$}", size, width = col_widths[5] as usize), Style::default().fg(muted).bg(bg)));
+            spans.push(Span::styled(
+                format!("{:<width$}", name_trunc, width = col_widths[2] as usize - 1),
+                Style::default().fg(row_fg).bg(bg),
+            ));
+            spans.push(Span::styled(
+                format!("{:<width$}", ver, width = col_widths[3] as usize),
+                Style::default().fg(muted).bg(bg),
+            ));
+            spans.push(Span::styled(
+                format!("{:<width$}", pub_trunc, width = col_widths[4] as usize),
+                Style::default().fg(muted).bg(bg),
+            ));
+            spans.push(Span::styled(
+                format!("{:>width$}", size, width = col_widths[5] as usize),
+                Style::default().fg(muted).bg(bg),
+            ));
 
             // Live CPU / RAM for the app's process (if running)
             let live = app.process_for(app_item);
-            let cpu = live.map(|p| format!("{:.0}%", p.cpu_usage)).unwrap_or_else(|| "-".into());
-            let ram = live.map(|p| fmt_bytes(p.memory_bytes)).unwrap_or_else(|| "-".into());
-            let live_color = if is_sel { Color::Rgb(200, 215, 240) } else { Color::Rgb(100, 116, 139) };
+            let cpu = live
+                .map(|p| format!("{:.0}%", p.cpu_usage))
+                .unwrap_or_else(|| "-".into());
+            let ram = live
+                .map(|p| fmt_bytes(p.memory_bytes))
+                .unwrap_or_else(|| "-".into());
+            let live_color = if is_sel {
+                Color::Rgb(200, 215, 240)
+            } else {
+                Color::Rgb(100, 116, 139)
+            };
             let running = live.is_some();
-            let cpu_color = if running { bar_color(live.map(|p| p.cpu_usage).unwrap_or(0.0)) } else { live_color };
-            spans.push(Span::styled(format!("{:>width$}", cpu, width = col_widths[6] as usize), Style::default().fg(cpu_color).bg(bg)));
-            spans.push(Span::styled(format!("{:>width$}", ram, width = col_widths[7] as usize), Style::default().fg(live_color).bg(bg)));
+            let cpu_color = if running {
+                bar_color(live.map(|p| p.cpu_usage).unwrap_or(0.0))
+            } else {
+                live_color
+            };
+            spans.push(Span::styled(
+                format!("{:>width$}", cpu, width = col_widths[6] as usize),
+                Style::default().fg(cpu_color).bg(bg),
+            ));
+            spans.push(Span::styled(
+                format!("{:>width$}", ram, width = col_widths[7] as usize),
+                Style::default().fg(live_color).bg(bg),
+            ));
 
             ListItem::new(Line::from(spans)).style(Style::default().bg(bg))
-        }).collect();
+        })
+        .collect();
 
     f.render_widget(List::new(items), body_area);
 }
@@ -229,9 +355,13 @@ fn compute_column_widths(total_width: u16) -> [u16; 8] {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max { s.to_string() }
-    else if max > 3 { format!("{}...", &s[..max - 3]) }
-    else { s[..max].to_string() }
+    if s.len() <= max {
+        s.to_string()
+    } else if max > 3 {
+        format!("{}...", &s[..max - 3])
+    } else {
+        s[..max].to_string()
+    }
 }
 
 // ── Details panel ────────────────────────────────────────────────────────
@@ -240,7 +370,11 @@ fn render_details(f: &mut Frame, area: Rect, app: &TuiApp) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Rgb(200, 210, 225)))
         .title(" Details ")
-        .title_style(Style::default().fg(Color::Rgb(59, 130, 246)).add_modifier(Modifier::BOLD))
+        .title_style(
+            Style::default()
+                .fg(Color::Rgb(59, 130, 246))
+                .add_modifier(Modifier::BOLD),
+        )
         .style(Style::default().bg(Color::Rgb(250, 252, 255)));
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -257,7 +391,12 @@ fn render_details(f: &mut Frame, area: Rect, app: &TuiApp) {
         let (avatar, avatar_color) = app_avatar(a);
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            Span::styled(format!("  {} ", avatar), Style::default().fg(avatar_color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("  {} ", avatar),
+                Style::default()
+                    .fg(avatar_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(&a.name, val_b),
         ]));
         lines.push(Line::from(""));
@@ -279,52 +418,116 @@ fn render_details(f: &mut Frame, area: Rect, app: &TuiApp) {
             lines.push(Line::from(""));
         }
 
-        detail_row(&mut lines, "Publisher", a.publisher.as_deref().unwrap_or("-"), &label, &val);
-        detail_row(&mut lines, "Version", a.version.as_deref().unwrap_or("-"), &label, &val);
+        detail_row(
+            &mut lines,
+            "Publisher",
+            a.publisher.as_deref().unwrap_or("-"),
+            &label,
+            &val,
+        );
+        detail_row(
+            &mut lines,
+            "Version",
+            a.version.as_deref().unwrap_or("-"),
+            &label,
+            &val,
+        );
         detail_row(&mut lines, "Size", &a.display_size(), &label, &val);
-        detail_row(&mut lines, "Date", &a.install_date.map(|d| d.to_string()).unwrap_or_else(|| "-".into()), &label, &val);
-        detail_row(&mut lines, "Source", &format_source(&a.source), &label, &val);
+        detail_row(
+            &mut lines,
+            "Date",
+            &a.install_date
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "-".into()),
+            &label,
+            &val,
+        );
+        detail_row(
+            &mut lines,
+            "Source",
+            &format_source(&a.source),
+            &label,
+            &val,
+        );
 
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled("  Install Location", label)));
-        let loc = a.install_location.as_ref().and_then(|p| p.to_str()).unwrap_or("-");
-        lines.push(Line::from(Span::styled(format!("    {}", truncate(loc, inner.width as usize - 6)), val)));
+        let loc = a
+            .install_location
+            .as_ref()
+            .and_then(|p| p.to_str())
+            .unwrap_or("-");
+        lines.push(Line::from(Span::styled(
+            format!("    {}", truncate(loc, inner.width as usize - 6)),
+            val,
+        )));
 
         if let Some(us) = &a.uninstall_string {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled("  Uninstall Command", label)));
-            lines.push(Line::from(Span::styled(format!("    {}", truncate(us, inner.width as usize - 6)), val)));
+            lines.push(Line::from(Span::styled(
+                format!("    {}", truncate(us, inner.width as usize - 6)),
+                val,
+            )));
         }
 
         if let Some(us) = &a.quiet_uninstall_string {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled("  Silent Uninstall", label)));
-            lines.push(Line::from(Span::styled(format!("    {}", truncate(us, inner.width as usize - 6)), val)));
+            lines.push(Line::from(Span::styled(
+                format!("    {}", truncate(us, inner.width as usize - 6)),
+                val,
+            )));
         }
 
         if let Some(kp) = a.metadata.get("registry_key") {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled("  Registry Key", label)));
-            let full = format!("{}\\{}", a.metadata.get("hive").map(|s| s.as_str()).unwrap_or("HKLM"), kp);
-            lines.push(Line::from(Span::styled(format!("    {}", truncate(&full, inner.width as usize - 6)), val)));
+            let full = format!(
+                "{}\\{}",
+                a.metadata.get("hive").map(|s| s.as_str()).unwrap_or("HKLM"),
+                kp
+            );
+            lines.push(Line::from(Span::styled(
+                format!("    {}", truncate(&full, inner.width as usize - 6)),
+                val,
+            )));
         }
 
         if let Some(ip) = &a.icon_path {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled("  Icon", label)));
-            lines.push(Line::from(Span::styled(format!("    {}", truncate(&ip.to_string_lossy(), inner.width as usize - 6)), val)));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "    {}",
+                    truncate(&ip.to_string_lossy(), inner.width as usize - 6)
+                ),
+                val,
+            )));
         }
 
         // Live process resources
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("  Process", accent.add_modifier(Modifier::BOLD))));
+        lines.push(Line::from(Span::styled(
+            "  Process",
+            accent.add_modifier(Modifier::BOLD),
+        )));
         match app.process_for(a) {
             Some(p) => {
                 let running = p.cpu_usage > 0.0 || p.memory_bytes > 0;
-                let state_color = if running { Color::Rgb(16, 185, 129) } else { Color::Rgb(148, 163, 184) };
+                let state_color = if running {
+                    Color::Rgb(16, 185, 129)
+                } else {
+                    Color::Rgb(148, 163, 184)
+                };
                 lines.push(Line::from(vec![
                     Span::styled(format!("  {:<11}", "State"), label),
-                    Span::styled(if running { "● Running" } else { "○ Idle" }, Style::default().fg(state_color).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        if running { "● Running" } else { "○ Idle" },
+                        Style::default()
+                            .fg(state_color)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(format!("  {} (PID {})", p.name, p.pid), val),
                 ]));
 
@@ -332,20 +535,37 @@ fn render_details(f: &mut Frame, area: Rect, app: &TuiApp) {
                     Span::styled(format!("  {:<11}", "CPU"), label),
                     Span::styled(format!("{:.1}% ", p.cpu_usage), val),
                 ];
-                cpu_spans.extend(stat_bar(p.cpu_usage, bar_color(p.cpu_usage), Color::Rgb(226, 232, 240), 4));
+                cpu_spans.extend(stat_bar(
+                    p.cpu_usage,
+                    bar_color(p.cpu_usage),
+                    Color::Rgb(226, 232, 240),
+                    4,
+                ));
                 lines.push(Line::from(cpu_spans));
 
-                let ram_pct = pct(p.memory_bytes, app.stats().map(|s| s.ram_total_bytes).unwrap_or(0));
+                let ram_pct = pct(
+                    p.memory_bytes,
+                    app.stats().map(|s| s.ram_total_bytes).unwrap_or(0),
+                );
                 let mut ram_spans = vec![
                     Span::styled(format!("  {:<11}", "RAM"), label),
                     Span::styled(format!("{} ", fmt_bytes(p.memory_bytes)), val),
                     Span::styled(format!("{:.1}%", ram_pct), muted_style()),
                 ];
-                ram_spans.extend(stat_bar(ram_pct, bar_color(ram_pct), Color::Rgb(226, 232, 240), 4));
+                ram_spans.extend(stat_bar(
+                    ram_pct,
+                    bar_color(ram_pct),
+                    Color::Rgb(226, 232, 240),
+                    4,
+                ));
                 lines.push(Line::from(ram_spans));
 
                 if p.vram_bytes > 0 {
-                    let total_vram = app.stats().and_then(|s| s.gpu.as_ref()).map(|g| g.vram_total_bytes).unwrap_or(0);
+                    let total_vram = app
+                        .stats()
+                        .and_then(|s| s.gpu.as_ref())
+                        .map(|g| g.vram_total_bytes)
+                        .unwrap_or(0);
                     let vram_pct = pct(p.vram_bytes, total_vram);
                     let mut vram_spans = vec![
                         Span::styled(format!("  {:<11}", "VRAM"), label),
@@ -354,7 +574,12 @@ fn render_details(f: &mut Frame, area: Rect, app: &TuiApp) {
                     if total_vram > 0 {
                         vram_spans.push(Span::styled(format!("{:.1}%", vram_pct), muted_style()));
                     }
-                    vram_spans.extend(stat_bar(vram_pct, bar_color(vram_pct), Color::Rgb(226, 232, 240), 4));
+                    vram_spans.extend(stat_bar(
+                        vram_pct,
+                        bar_color(vram_pct),
+                        Color::Rgb(226, 232, 240),
+                        4,
+                    ));
                     lines.push(Line::from(vram_spans));
                 }
 
@@ -363,32 +588,89 @@ fn render_details(f: &mut Frame, area: Rect, app: &TuiApp) {
                         Span::styled(format!("  {:<11}", "GPU"), label),
                         Span::styled(format!("{:.1}% ", p.gpu_usage_pct), val),
                     ];
-                    gpu_spans.extend(stat_bar(p.gpu_usage_pct, bar_color(p.gpu_usage_pct), Color::Rgb(226, 232, 240), 4));
+                    gpu_spans.extend(stat_bar(
+                        p.gpu_usage_pct,
+                        bar_color(p.gpu_usage_pct),
+                        Color::Rgb(226, 232, 240),
+                        4,
+                    ));
                     lines.push(Line::from(gpu_spans));
                 }
 
-                let vm = if p.virtual_memory > 0 { format!(", VM {}", fmt_bytes(p.virtual_memory)) } else { String::new() };
-                detail_row(&mut lines, "Mem (virt)", &format!("{} threads{}", p.threads, vm), &label, &val);
-                detail_row(&mut lines, "Disk I/O", &format!("↑ {} ↓ {}", fmt_bytes(p.read_bytes), fmt_bytes(p.written_bytes)), &label, &val);
-                detail_row(&mut lines, "Started", &format_started(p.started_at, p.run_time_secs), &label, &val);
+                let vm = if p.virtual_memory > 0 {
+                    format!(", VM {}", fmt_bytes(p.virtual_memory))
+                } else {
+                    String::new()
+                };
+                detail_row(
+                    &mut lines,
+                    "Mem (virt)",
+                    &format!("{} threads{}", p.threads, vm),
+                    &label,
+                    &val,
+                );
+                detail_row(
+                    &mut lines,
+                    "Disk I/O",
+                    &format!(
+                        "↑ {} ↓ {}",
+                        fmt_bytes(p.read_bytes),
+                        fmt_bytes(p.written_bytes)
+                    ),
+                    &label,
+                    &val,
+                );
+                detail_row(
+                    &mut lines,
+                    "Started",
+                    &format_started(p.started_at, p.run_time_secs),
+                    &label,
+                    &val,
+                );
             }
             None => {
                 lines.push(Line::from(vec![
                     Span::styled(format!("  {:<11}", "State"), label),
-                    Span::styled("○ Not running", Style::default().fg(Color::Rgb(148, 163, 184))),
+                    Span::styled(
+                        "○ Not running",
+                        Style::default().fg(Color::Rgb(148, 163, 184)),
+                    ),
                 ]));
             }
         }
 
         // Actions
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("  Actions", accent.add_modifier(Modifier::BOLD))));
+        lines.push(Line::from(Span::styled(
+            "  Actions",
+            accent.add_modifier(Modifier::BOLD),
+        )));
         lines.push(Line::from(""));
 
-        lines.push(action_line("[U] ", "Uninstall", Color::Rgb(59, 130, 246), &val));
-        lines.push(action_line("[F] ", "Force Remove", Color::Rgb(239, 68, 68), &val));
-        lines.push(action_line("[L] ", "Scan Leftovers", Color::Rgb(16, 185, 129), &val));
-        lines.push(action_line("[B] ", "Add to Batch", Color::Rgb(245, 158, 11), &val));
+        lines.push(action_line(
+            "[U] ",
+            "Uninstall",
+            Color::Rgb(59, 130, 246),
+            &val,
+        ));
+        lines.push(action_line(
+            "[F] ",
+            "Force Remove",
+            Color::Rgb(239, 68, 68),
+            &val,
+        ));
+        lines.push(action_line(
+            "[L] ",
+            "Scan Leftovers",
+            Color::Rgb(16, 185, 129),
+            &val,
+        ));
+        lines.push(action_line(
+            "[B] ",
+            "Add to Batch",
+            Color::Rgb(245, 158, 11),
+            &val,
+        ));
 
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     } else {
@@ -410,14 +692,19 @@ fn detail_row(lines: &mut Vec<Line>, label: &str, value: &str, ls: &Style, vs: &
 
 fn action_line(key: &str, label: &str, color: Color, base: &Style) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("    {}", key), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!("    {}", key),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(label.to_string(), *base),
     ])
 }
 
 fn format_source(source: &greek_common::InstallSource) -> String {
     match source {
-        greek_common::InstallSource::Registry { hive, .. } => format!("Registry ({})", hive.as_str()),
+        greek_common::InstallSource::Registry { hive, .. } => {
+            format!("Registry ({})", hive.as_str())
+        }
         greek_common::InstallSource::WindowsStore { .. } => "Windows Store".into(),
         greek_common::InstallSource::Portable { .. } => "Portable".into(),
         greek_common::InstallSource::BrowserExtension { browser, .. } => format!("{:?}", browser),
@@ -447,16 +734,29 @@ fn render_footer(f: &mut Frame, area: Rect, app: &TuiApp) {
             spans.push(Span::styled("  ", Style::default()));
 
             // CPU
-            spans.push(Span::styled("⚙ ", Style::default().fg(icon).add_modifier(Modifier::BOLD)));
-            spans.push(Span::styled(format!("{:.0}% ", s.cpu_usage), Style::default().fg(text)));
+            spans.push(Span::styled(
+                "⚙ ",
+                Style::default().fg(icon).add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::styled(
+                format!("{:.0}% ", s.cpu_usage),
+                Style::default().fg(text),
+            ));
             spans.extend(stat_bar(s.cpu_usage, bar_color(s.cpu_usage), bar_empty, 4));
             spans.push(sep());
 
             // RAM
-            spans.push(Span::styled("▮ ", Style::default().fg(icon).add_modifier(Modifier::BOLD)));
+            spans.push(Span::styled(
+                "▮ ",
+                Style::default().fg(icon).add_modifier(Modifier::BOLD),
+            ));
             let ram_pct = pct(s.ram_used_bytes, s.ram_total_bytes);
             spans.push(Span::styled(
-                format!("{}/{} ", fmt_bytes(s.ram_used_bytes), fmt_bytes(s.ram_total_bytes)),
+                format!(
+                    "{}/{} ",
+                    fmt_bytes(s.ram_used_bytes),
+                    fmt_bytes(s.ram_total_bytes)
+                ),
                 Style::default().fg(text),
             ));
             spans.extend(stat_bar(ram_pct, bar_color(ram_pct), bar_empty, 4));
@@ -464,9 +764,16 @@ fn render_footer(f: &mut Frame, area: Rect, app: &TuiApp) {
             // Swap
             if s.swap_total_bytes > 0 {
                 spans.push(sep());
-                spans.push(Span::styled("▩ ", Style::default().fg(icon).add_modifier(Modifier::BOLD)));
                 spans.push(Span::styled(
-                    format!("{}/{} ", fmt_bytes(s.swap_used_bytes), fmt_bytes(s.swap_total_bytes)),
+                    "▩ ",
+                    Style::default().fg(icon).add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::styled(
+                    format!(
+                        "{}/{} ",
+                        fmt_bytes(s.swap_used_bytes),
+                        fmt_bytes(s.swap_total_bytes)
+                    ),
                     Style::default().fg(text),
                 ));
             }
@@ -475,21 +782,40 @@ fn render_footer(f: &mut Frame, area: Rect, app: &TuiApp) {
             for d in s.disks.iter().take(2) {
                 spans.push(sep());
                 let p = d.usage_pct();
-                spans.push(Span::styled(format!("{} ", d.label), Style::default().fg(icon).add_modifier(Modifier::BOLD)));
-                spans.push(Span::styled(format!("{:.0}% ", p), Style::default().fg(text)));
+                spans.push(Span::styled(
+                    format!("{} ", d.label),
+                    Style::default().fg(icon).add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::styled(
+                    format!("{:.0}% ", p),
+                    Style::default().fg(text),
+                ));
                 spans.extend(stat_bar(p, bar_color(p), bar_empty, 4));
             }
 
             // GPU + VRAM
             if let Some(g) = &s.gpu {
                 spans.push(sep());
-                spans.push(Span::styled("◉ ", Style::default().fg(icon).add_modifier(Modifier::BOLD)));
-                spans.push(Span::styled(format!("{:.0}% ", g.usage_pct), Style::default().fg(text)));
+                spans.push(Span::styled(
+                    "◉ ",
+                    Style::default().fg(icon).add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::styled(
+                    format!("{:.0}% ", g.usage_pct),
+                    Style::default().fg(text),
+                ));
                 spans.extend(stat_bar(g.usage_pct, bar_color(g.usage_pct), bar_empty, 4));
                 if g.vram_total_bytes > 0 {
-                    spans.push(Span::styled("◆ ", Style::default().fg(icon).add_modifier(Modifier::BOLD)));
                     spans.push(Span::styled(
-                        format!("{}/{} ", fmt_bytes(g.vram_used_bytes), fmt_bytes(g.vram_total_bytes)),
+                        "◆ ",
+                        Style::default().fg(icon).add_modifier(Modifier::BOLD),
+                    ));
+                    spans.push(Span::styled(
+                        format!(
+                            "{}/{} ",
+                            fmt_bytes(g.vram_used_bytes),
+                            fmt_bytes(g.vram_total_bytes)
+                        ),
                         Style::default().fg(text),
                     ));
                 }
@@ -498,7 +824,10 @@ fn render_footer(f: &mut Frame, area: Rect, app: &TuiApp) {
             // Battery
             if let Some(b) = &s.battery {
                 spans.push(sep());
-                spans.push(Span::styled("◫ ", Style::default().fg(icon).add_modifier(Modifier::BOLD)));
+                spans.push(Span::styled(
+                    "◫ ",
+                    Style::default().fg(icon).add_modifier(Modifier::BOLD),
+                ));
                 spans.push(Span::styled(
                     format!("{:.0}%{} ", b.percent, if b.charging { "+" } else { "" }),
                     Style::default().fg(text),
@@ -507,13 +836,22 @@ fn render_footer(f: &mut Frame, area: Rect, app: &TuiApp) {
 
             // Uptime
             spans.push(sep());
-            spans.push(Span::styled("◷ ", Style::default().fg(icon).add_modifier(Modifier::BOLD)));
-            spans.push(Span::styled(fmt_uptime(s.uptime_secs), Style::default().fg(text)));
+            spans.push(Span::styled(
+                "◷ ",
+                Style::default().fg(icon).add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::styled(
+                fmt_uptime(s.uptime_secs),
+                Style::default().fg(text),
+            ));
             spans.push(Span::styled("  ", Style::default()));
 
             spans
         }
-        None => vec![Span::styled("  Gathering system stats...", Style::default().fg(muted))],
+        None => vec![Span::styled(
+            "  Gathering system stats...",
+            Style::default().fg(muted),
+        )],
     };
 
     let sel_count = app.get_selected_apps().len();
@@ -525,11 +863,22 @@ fn render_footer(f: &mut Frame, area: Rect, app: &TuiApp) {
     };
 
     let mut key_spans = vec![
-        Span::styled(&status, Style::default().fg(Color::Rgb(59, 130, 246)).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            &status,
+            Style::default()
+                .fg(Color::Rgb(59, 130, 246))
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw("  "),
-        Span::styled("[U]ninstall ", Style::default().fg(Color::Rgb(59, 130, 246))),
+        Span::styled(
+            "[U]ninstall ",
+            Style::default().fg(Color::Rgb(59, 130, 246)),
+        ),
         Span::styled("[F]orce ", Style::default().fg(Color::Rgb(239, 68, 68))),
-        Span::styled("[L]eftovers ", Style::default().fg(Color::Rgb(16, 185, 129))),
+        Span::styled(
+            "[L]eftovers ",
+            Style::default().fg(Color::Rgb(16, 185, 129)),
+        ),
         Span::styled("[B]atch ", Style::default().fg(Color::Rgb(245, 158, 11))),
         Span::raw("  "),
         Span::styled("[M]enu ", Style::default().fg(Color::Rgb(100, 116, 139))),
@@ -538,7 +887,10 @@ fn render_footer(f: &mut Frame, area: Rect, app: &TuiApp) {
     ];
 
     if sel_count > 0 {
-        key_spans.push(Span::styled(format!(" {} selected ", sel_count), Style::default().fg(Color::Rgb(16, 185, 129))));
+        key_spans.push(Span::styled(
+            format!(" {} selected ", sel_count),
+            Style::default().fg(Color::Rgb(16, 185, 129)),
+        ));
     }
 
     let line1 = Line::from(stats_line);
@@ -566,12 +918,18 @@ fn bar_color(pct: f32) -> Color {
 
 /// Filled/unfilled bar segments, e.g. 4 segments for 62% -> "███░".
 fn stat_bar(pct: f32, fill: Color, empty: Color, width: usize) -> Vec<Span<'static>> {
-    let filled = ((pct / 100.0) * width as f32).round().clamp(0.0, width as f32) as usize;
+    let filled = ((pct / 100.0) * width as f32)
+        .round()
+        .clamp(0.0, width as f32) as usize;
     let mut spans = Vec::with_capacity(width);
     for i in 0..width {
         spans.push(Span::styled(
             "█",
-            if i < filled { Style::default().fg(fill) } else { Style::default().fg(empty) },
+            if i < filled {
+                Style::default().fg(fill)
+            } else {
+                Style::default().fg(empty)
+            },
         ));
     }
     spans.push(Span::raw(" "));
@@ -593,7 +951,11 @@ fn fmt_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
     if bytes >= GB {
         let g = bytes as f64 / GB as f64;
-        if g < 10.0 { format!("{:.1}G", g) } else { format!("{:.0}G", g) }
+        if g < 10.0 {
+            format!("{:.1}G", g)
+        } else {
+            format!("{:.0}G", g)
+        }
     } else if bytes >= MB {
         format!("{:.0}M", bytes as f64 / MB as f64)
     } else if bytes >= KB {
@@ -626,7 +988,11 @@ fn format_started(started_at: Option<u64>, run_time_secs: u64) -> String {
     match started_at {
         Some(ts) => {
             let when = chrono::DateTime::from_timestamp(ts as i64, 0)
-                .map(|u| u.with_timezone(&chrono::Local).format("%d %b %H:%M:%S").to_string())
+                .map(|u| {
+                    u.with_timezone(&chrono::Local)
+                        .format("%d %b %H:%M:%S")
+                        .to_string()
+                })
                 .unwrap_or_else(|| "-".into());
             format!("{} · up {}", when, fmt_uptime(run_time_secs))
         }
@@ -643,20 +1009,38 @@ fn render_help(f: &mut Frame) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Rgb(59, 130, 246)))
         .title(" Keyboard Shortcuts ")
-        .title_style(Style::default().fg(Color::Rgb(59, 130, 246)).add_modifier(Modifier::BOLD))
+        .title_style(
+            Style::default()
+                .fg(Color::Rgb(59, 130, 246))
+                .add_modifier(Modifier::BOLD),
+        )
         .style(Style::default().bg(Color::Rgb(255, 255, 255)));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let bold_blue = Style::default().fg(Color::Rgb(59, 130, 246)).add_modifier(Modifier::BOLD);
-    let key_color = Style::default().fg(Color::Rgb(59, 130, 246)).add_modifier(Modifier::BOLD);
+    let bold_blue = Style::default()
+        .fg(Color::Rgb(59, 130, 246))
+        .add_modifier(Modifier::BOLD);
+    let key_color = Style::default()
+        .fg(Color::Rgb(59, 130, 246))
+        .add_modifier(Modifier::BOLD);
     let desc_color = Style::default().fg(Color::Rgb(51, 65, 85));
 
     let help = vec![
         Line::from(""),
         sec("Navigation", &bold_blue),
-        keyline("Up / Down / j / k", "Move selection", &key_color, &desc_color),
-        keyline("PageUp / PageDown", "Scroll by page", &key_color, &desc_color),
+        keyline(
+            "Up / Down / j / k",
+            "Move selection",
+            &key_color,
+            &desc_color,
+        ),
+        keyline(
+            "PageUp / PageDown",
+            "Scroll by page",
+            &key_color,
+            &desc_color,
+        ),
         keyline("Home / End", "Jump to start / end", &key_color, &desc_color),
         Line::from(""),
         sec("Selection", &bold_blue),
@@ -672,15 +1056,29 @@ fn render_help(f: &mut Frame) {
         keyline("r", "Rescan all applications", &key_color, &desc_color),
         Line::from(""),
         sec("View", &bold_blue),
-        keyline("d / Enter / Tab", "Toggle details panel", &key_color, &desc_color),
+        keyline(
+            "d / Enter / Tab",
+            "Toggle details panel",
+            &key_color,
+            &desc_color,
+        ),
         keyline("m", "Open context menu", &key_color, &desc_color),
         keyline("? / h", "Show / hide this help", &key_color, &desc_color),
         keyline("q / Esc", "Quit", &key_color, &desc_color),
         Line::from(""),
-        Line::from(vec![Span::styled("  Right-click on an app for context menu", Style::default().fg(Color::Rgb(148, 163, 184)))]),
-        Line::from(vec![Span::styled("  Mouse scroll to navigate list", Style::default().fg(Color::Rgb(148, 163, 184)))]),
+        Line::from(vec![Span::styled(
+            "  Right-click on an app for context menu",
+            Style::default().fg(Color::Rgb(148, 163, 184)),
+        )]),
+        Line::from(vec![Span::styled(
+            "  Mouse scroll to navigate list",
+            Style::default().fg(Color::Rgb(148, 163, 184)),
+        )]),
         Line::from(""),
-        Line::from(vec![Span::styled("  Press any key to close", Style::default().fg(Color::Rgb(148, 163, 184)))]),
+        Line::from(vec![Span::styled(
+            "  Press any key to close",
+            Style::default().fg(Color::Rgb(148, 163, 184)),
+        )]),
     ];
 
     f.render_widget(Paragraph::new(help).wrap(Wrap { trim: false }), inner);
@@ -700,7 +1098,14 @@ fn keyline<'a>(key: &'a str, desc: &'a str, ks: &'a Style, ds: &'a Style) -> Lin
 // ── Context menu ─────────────────────────────────────────────────────────
 fn render_context_menu(f: &mut Frame, app: &TuiApp) {
     let items = context_menu_items();
-    let labels = ["View Details", "Uninstall", "Force Remove", "Scan Leftovers", "Add to Batch", "Cancel"];
+    let labels = [
+        "View Details",
+        "Uninstall",
+        "Force Remove",
+        "Scan Leftovers",
+        "Add to Batch",
+        "Cancel",
+    ];
     let colors = [
         Color::Rgb(51, 65, 85),
         Color::Rgb(239, 68, 68),
@@ -719,7 +1124,12 @@ fn render_context_menu(f: &mut Frame, app: &TuiApp) {
 
     // Shadow
     f.render_widget(Clear, Rect::new(x + 1, y + 1, menu_w, menu_h));
-    f.render_widget(Block::default().borders(Borders::ALL).style(Style::default().bg(Color::Rgb(190, 195, 205))), Rect::new(x + 1, y + 1, menu_w, menu_h));
+    f.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().bg(Color::Rgb(190, 195, 205))),
+        Rect::new(x + 1, y + 1, menu_w, menu_h),
+    );
 
     // Menu
     f.render_widget(Clear, menu_area);
@@ -727,20 +1137,31 @@ fn render_context_menu(f: &mut Frame, app: &TuiApp) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Rgb(170, 180, 200)))
         .title(" Actions ")
-        .title_style(Style::default().fg(Color::Rgb(59, 130, 246)).add_modifier(Modifier::BOLD))
+        .title_style(
+            Style::default()
+                .fg(Color::Rgb(59, 130, 246))
+                .add_modifier(Modifier::BOLD),
+        )
         .style(Style::default().bg(Color::Rgb(255, 255, 255)));
     let inner = block.inner(menu_area);
     f.render_widget(block, menu_area);
 
     let sel = app.context_menu_index();
-    let list_items: Vec<ListItem> = labels.iter().enumerate().map(|(i, text)| {
-        let style = if i == sel {
-            Style::default().fg(Color::White).bg(Color::Rgb(59, 130, 246)).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(colors[i])
-        };
-        ListItem::new(Line::from(Span::styled(format!(" {} ", text), style)))
-    }).collect();
+    let list_items: Vec<ListItem> = labels
+        .iter()
+        .enumerate()
+        .map(|(i, text)| {
+            let style = if i == sel {
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Rgb(59, 130, 246))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(colors[i])
+            };
+            ListItem::new(Line::from(Span::styled(format!(" {} ", text), style)))
+        })
+        .collect();
 
     f.render_widget(List::new(list_items), inner);
 }
@@ -754,13 +1175,19 @@ fn render_overlay(f: &mut Frame, title: &str, msg: &str) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Rgb(59, 130, 246)))
         .title(format!(" {} ", title))
-        .title_style(Style::default().fg(Color::Rgb(59, 130, 246)).add_modifier(Modifier::BOLD))
+        .title_style(
+            Style::default()
+                .fg(Color::Rgb(59, 130, 246))
+                .add_modifier(Modifier::BOLD),
+        )
         .style(Style::default().bg(Color::Rgb(255, 255, 255)));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     f.render_widget(
-        Paragraph::new(msg).alignment(Alignment::Center).style(Style::default().fg(Color::Rgb(100, 116, 139))),
+        Paragraph::new(msg)
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::Rgb(100, 116, 139))),
         inner,
     );
 }

@@ -55,6 +55,9 @@ cd C:\Users\rohit\Music\REEK
 cargo build --workspace
 ```
 
+> Requires the MSVC build tools (Visual Studio Build Tools / C++ workload) for
+> Windows. On Linux ensure `pkg-config` and `libssl-dev` are available.
+
 ## Building Release Binaries
 
 For optimized release builds:

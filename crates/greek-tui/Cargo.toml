@@ -2,11 +2,17 @@
 name = "greek-tui"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[features]
+default = []
+windows = ["greek-windows"]
 
 [dependencies]
-greek-common = { path = "../greek-common" }
-greek-core = { path = "../greek-core" }
-greek-windows = { path = "../greek-windows" }
+greek-common = { path = "../greek-common", version = "0.1.0" }
+greek-core = { path = "../greek-core", version = "0.1.0" }
+greek-windows = { path = "../greek-windows", version = "0.1.0", optional = true }
+greek-platform = { path = "../greek-platform", version = "0.1.0" }
 
 # TUI Framework
 ratatui = { version = "0.28.0", features = ["unstable-widget-ref"] }
@@ -31,3 +37,6 @@ tracing-subscriber = { workspace = true }
 
 # Base64 (decode icon pixel data from app metadata)
 base64 = "0.22"
+
+# Fuzzy matching for search
+fuzzy-matcher = "0.3.7"

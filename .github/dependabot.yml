@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    # Never merge wildcard/patch bumps automatically; review lockfile changes.
+    commit-message:
+      prefix: "deps"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "ci"
+    # Dependabot updates the SHA and the trailing version comment together,
+    # keeping the immutable-action-pin convention intact.
+    groups:
+      actions:
+        patterns: ["*"]

@@ -1,13 +1,10 @@
 // Scanner module for discovering installed applications
 
-use greek_common::{
-    AppScanner, InstalledApp, InstallSource, Result, RegistryHive, GreekError, ScanError,
-};
 use async_trait::async_trait;
-use std::path::PathBuf;
-use std::sync::Mutex;
-use tracing;
+use greek_common::{AppScanner, GreekError, InstallSource, InstalledApp, Result, ScanError};
 use rayon::prelude::*;
+use std::path::PathBuf;
+use tracing;
 
 /// Base scanner implementation with common functionality
 pub struct BaseScanner {
@@ -52,21 +49,36 @@ pub struct ScannerManager {
 
 impl ScannerManager {
     pub fn new() -> Self {
-        let mut manager = Self {
-            scanners: Vec::new(),
-        };
-        
+        #[allow(unused_mut)]
+        let mut scanners: Vec<Box<dyn AppScanner>> = Vec::new();
+
         // Register platform-specific scanners
-        #[cfg(target_os = "windows")]
+        #[cfg(all(target_os = "windows", feature = "windows"))]
         {
             tracing::info!("Registering Windows Registry scanner");
-            manager.scanners.push(Box::new(greek_windows::WindowsRegistryScanner::new()));
-            
+            scanners.push(Box::new(greek_windows::WindowsRegistryScanner::new()));
+
             tracing::info!("Registering Windows Store scanner");
-            manager.scanners.push(Box::new(greek_windows::WindowsStoreScanner::new()));
+            scanners.push(Box::new(greek_windows::WindowsStoreScanner::new()));
         }
-        
-        manager
+
+        #[cfg(target_os = "linux")]
+        {
+            tracing::info!("Registering Linux package scanner");
+            if let Some(pm) = greek_platform::linux::LinuxPackageScanner::detect_package_manager() {
+                let scanner = greek_platform::linux::LinuxPackageScanner::new(pm);
+                scanners.push(Box::new(LinuxScannerAdapter(scanner)));
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            tracing::info!("Registering macOS app scanner");
+            let scanner = greek_platform::macos::MacOsAppScanner::new();
+            scanners.push(Box::new(MacOsScannerAdapter(scanner)));
+        }
+
+        Self { scanners }
     }
 
     pub fn register_scanner(&mut self, scanner: Box<dyn AppScanner>) {
@@ -90,7 +102,7 @@ impl ScannerManager {
         for scanner in &self.scanners {
             let scanner_name = scanner.scanner_name();
             tracing::info!("Running scanner: {}", scanner_name);
-            
+
             match scanner.scan().await {
                 Ok(apps) => {
                     tracing::info!("Scanner '{}' found {} apps", scanner_name, apps.len());
@@ -104,7 +116,7 @@ impl ScannerManager {
 
         // Deduplicate apps
         all_apps = self.deduplicate_apps(all_apps);
-        
+
         tracing::info!("Total unique apps found: {}", all_apps.len());
         Ok(all_apps)
     }
@@ -116,12 +128,16 @@ impl ScannerManager {
 
     fn deduplicate_apps(&self, apps: Vec<InstalledApp>) -> Vec<InstalledApp> {
         use std::collections::HashMap;
-        
+
         let mut unique_apps: HashMap<String, InstalledApp> = HashMap::new();
-        
+
         for app in apps {
-            let key = format!("{}-{}", app.name, app.version.as_ref().unwrap_or(&String::new()));
-            
+            let key = format!(
+                "{}-{}",
+                app.name,
+                app.version.as_ref().unwrap_or(&String::new())
+            );
+
             if let Some(existing) = unique_apps.get(&key) {
                 if self.is_more_complete(&app, existing) {
                     unique_apps.insert(key, app);
@@ -130,7 +146,7 @@ impl ScannerManager {
                 unique_apps.insert(key, app);
             }
         }
-        
+
         unique_apps.into_values().collect()
     }
 
@@ -140,69 +156,88 @@ impl ScannerManager {
 
     fn completeness_score(&self, app: &InstalledApp) -> i32 {
         let mut score = 0;
-        if app.publisher.is_some() { score += 1; }
-        if app.version.is_some() { score += 1; }
-        if app.install_date.is_some() { score += 1; }
-        if app.install_location.is_some() { score += 1; }
-        if app.uninstall_string.is_some() { score += 1; }
-        if app.size_bytes.is_some() { score += 1; }
-        if !app.registry_keys.is_empty() { score += 1; }
+        if app.publisher.is_some() {
+            score += 1;
+        }
+        if app.version.is_some() {
+            score += 1;
+        }
+        if app.install_date.is_some() {
+            score += 1;
+        }
+        if app.install_location.is_some() {
+            score += 1;
+        }
+        if app.uninstall_string.is_some() {
+            score += 1;
+        }
+        if app.size_bytes.is_some() {
+            score += 1;
+        }
+        if !app.registry_keys.is_empty() {
+            score += 1;
+        }
         score
     }
 
-    /// Parallel scan using rayon for CPU-bound operations
+    /// Parallel scan using rayon for CPU-bound operations.
+    /// Collects into per-fork vectors and merges afterwards, avoiding any
+    /// shared-mutable-state / lock contention across the rayon pool (which
+    /// could otherwise deadlock when the pool is saturated).
     pub fn scan_parallel(&self, directories: &[PathBuf]) -> Vec<InstalledApp> {
-        let all_apps = Mutex::new(Vec::new());
-        
-        directories.par_iter().for_each(|dir| {
-            if let Ok(mut apps) = self.scan_directory_parallel(dir) {
-                all_apps.lock().unwrap().append(&mut apps);
-            }
-        });
-        
-        let apps = all_apps.into_inner().unwrap();
+        let all_apps: Vec<Vec<InstalledApp>> = directories
+            .par_iter()
+            .filter_map(|dir| self.scan_directory_parallel(dir).ok())
+            .collect();
+
+        let apps: Vec<InstalledApp> = all_apps.into_iter().flatten().collect();
         self.deduplicate_apps(apps)
     }
 
     fn scan_directory_parallel(&self, directory: &PathBuf) -> Result<Vec<InstalledApp>> {
-        let apps = Mutex::new(Vec::new());
-        
         if !directory.exists() {
             return Ok(Vec::new());
         }
-        
+
         let entries: Vec<_> = std::fs::read_dir(directory)
-            .map_err(|e| GreekError::ScanError(ScanError::FileSystemScanFailed(e.to_string()).to_string()))?
+            .map_err(|e| {
+                GreekError::ScanError(ScanError::FileSystemScanFailed(e.to_string()).to_string())
+            })?
             .filter_map(|e| e.ok())
             .collect();
-        
-        entries.par_iter().for_each(|entry| {
-            let path = entry.path();
-            if path.is_dir() {
-                if let Some(app) = self.detect_portable_app_parallel(&path) {
-                    apps.lock().unwrap().push(app);
+
+        // Each parallel task returns its own Option; no Mutex needed.
+        let apps: Vec<InstalledApp> = entries
+            .par_iter()
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.is_dir() {
+                    self.detect_portable_app_parallel(&path)
+                } else {
+                    None
                 }
-            }
-        });
-        
-        Ok(apps.into_inner().unwrap())
+            })
+            .collect();
+
+        Ok(apps)
     }
 
     fn detect_portable_app_parallel(&self, path: &PathBuf) -> Option<InstalledApp> {
         let dir_name = path.file_name()?.to_str()?;
-        
-        let entries: Vec<_> = std::fs::read_dir(path).ok()?
+
+        let entries: Vec<_> = std::fs::read_dir(path)
+            .ok()?
             .filter_map(|e| e.ok())
             .collect();
-        
+
         entries.par_iter().find_map_any(|entry| {
             let file_path = entry.path();
-            
+
             if file_path.is_file() {
                 if let Some(ext) = file_path.extension() {
                     if ext == "exe" {
                         let exe_name = file_path.file_stem()?.to_str()?;
-                        
+
                         if exe_name.to_lowercase() == dir_name.to_lowercase() {
                             let mut app = InstalledApp::new(
                                 dir_name.to_string(),
@@ -211,63 +246,71 @@ impl ScannerManager {
                                     confidence: 0.8,
                                 },
                             );
-                            
+
                             app.install_location = Some(path.clone());
                             return Some(app);
                         }
                     }
                 }
             }
-            
+
             None
         })
     }
 
-    pub fn scan_batch_parallel(&self, directory_trees: Vec<PathBuf>, max_depth: usize) -> Vec<InstalledApp> {
-        let all_apps = Mutex::new(Vec::new());
-        
-        directory_trees.par_iter().for_each(|tree| {
-            if let Ok(mut apps) = self.scan_directory_tree_parallel(tree, max_depth) {
-                all_apps.lock().unwrap().append(&mut apps);
-            }
-        });
-        
-        let apps = all_apps.into_inner().unwrap();
+    pub fn scan_batch_parallel(
+        &self,
+        directory_trees: Vec<PathBuf>,
+        max_depth: usize,
+    ) -> Vec<InstalledApp> {
+        let all_apps: Vec<Vec<InstalledApp>> = directory_trees
+            .par_iter()
+            .filter_map(|tree| self.scan_directory_tree_parallel(tree, max_depth).ok())
+            .collect();
+
+        let apps: Vec<InstalledApp> = all_apps.into_iter().flatten().collect();
         self.deduplicate_apps(apps)
     }
 
-    fn scan_directory_tree_parallel(&self, root: &PathBuf, max_depth: usize) -> Result<Vec<InstalledApp>> {
-        let apps = Mutex::new(Vec::new());
-        
+    fn scan_directory_tree_parallel(
+        &self,
+        root: &PathBuf,
+        max_depth: usize,
+    ) -> Result<Vec<InstalledApp>> {
         fn scan_recursive(
             dir: &PathBuf,
             depth: usize,
             max_depth: usize,
-            apps: &Mutex<Vec<InstalledApp>>,
             scanner: &ScannerManager,
-        ) {
+        ) -> Vec<InstalledApp> {
             if depth > max_depth {
-                return;
+                return Vec::new();
             }
-            
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                let entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
-                
-                entries.par_iter().for_each(|entry| {
+
+            let entries: Vec<_> = std::fs::read_dir(dir)
+                .map(|it| it.filter_map(|e| e.ok()).collect())
+                .unwrap_or_default();
+
+            // Each branch returns its own Vec; merges happen after the fork.
+            let nested: Vec<Vec<InstalledApp>> = entries
+                .par_iter()
+                .map(|entry| {
                     let path = entry.path();
+                    let mut found = Vec::new();
                     if path.is_dir() {
                         if let Some(app) = scanner.detect_portable_app_parallel(&path) {
-                            apps.lock().unwrap().push(app);
+                            found.push(app);
                         }
-                        scan_recursive(&path, depth + 1, max_depth, apps, scanner);
+                        found.extend(scan_recursive(&path, depth + 1, max_depth, scanner));
                     }
-                });
-            }
+                    found
+                })
+                .collect();
+
+            nested.into_iter().flatten().collect()
         }
-        
-        scan_recursive(root, 0, max_depth, &apps, self);
-        
-        Ok(apps.into_inner().unwrap())
+
+        Ok(scan_recursive(root, 0, max_depth, self))
     }
 }
 
@@ -308,17 +351,17 @@ impl AppScanner for PortableAppScanner {
 
     async fn scan(&self) -> Result<Vec<InstalledApp>> {
         let mut apps = Vec::new();
-        
+
         for directory in &self.scan_directories {
             if !directory.exists() {
                 tracing::warn!("Portable scan directory does not exist: {:?}", directory);
                 continue;
             }
-            
+
             let discovered = self.scan_directory(directory).await?;
             apps.extend(discovered);
         }
-        
+
         Ok(apps)
     }
 
@@ -330,42 +373,49 @@ impl AppScanner for PortableAppScanner {
 impl PortableAppScanner {
     async fn scan_directory(&self, directory: &PathBuf) -> Result<Vec<InstalledApp>> {
         let mut apps = Vec::new();
-        
-        let entries = std::fs::read_dir(directory)
-            .map_err(|e| GreekError::ScanError(ScanError::FileSystemScanFailed(e.to_string()).to_string()))?;
-        
+
+        let entries = std::fs::read_dir(directory).map_err(|e| {
+            GreekError::ScanError(ScanError::FileSystemScanFailed(e.to_string()).to_string())
+        })?;
+
         for entry in entries {
-            let entry = entry.map_err(|e| GreekError::ScanError(ScanError::FileSystemScanFailed(e.to_string()).to_string()))?;
+            let entry = entry.map_err(|e| {
+                GreekError::ScanError(ScanError::FileSystemScanFailed(e.to_string()).to_string())
+            })?;
             let path = entry.path();
-            
+
             if path.is_dir() {
                 if let Some(app) = self.detect_portable_app(&path).await? {
                     apps.push(app);
                 }
             }
         }
-        
+
         Ok(apps)
     }
 
     async fn detect_portable_app(&self, path: &PathBuf) -> Result<Option<InstalledApp>> {
-        let dir_name = path.file_name()
+        let dir_name = path
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
-        
-        for entry in std::fs::read_dir(path)
-            .map_err(|e| GreekError::ScanError(ScanError::FileSystemScanFailed(e.to_string()).to_string()))?
-        {
-            let entry = entry.map_err(|e| GreekError::ScanError(ScanError::FileSystemScanFailed(e.to_string()).to_string()))?;
+
+        for entry in std::fs::read_dir(path).map_err(|e| {
+            GreekError::ScanError(ScanError::FileSystemScanFailed(e.to_string()).to_string())
+        })? {
+            let entry = entry.map_err(|e| {
+                GreekError::ScanError(ScanError::FileSystemScanFailed(e.to_string()).to_string())
+            })?;
             let file_path = entry.path();
-            
+
             if file_path.is_file() {
                 if let Some(ext) = file_path.extension() {
                     if ext == "exe" {
-                        let exe_name = file_path.file_stem()
+                        let exe_name = file_path
+                            .file_stem()
                             .and_then(|n| n.to_str())
                             .unwrap_or("unknown");
-                        
+
                         if exe_name.to_lowercase() == dir_name.to_lowercase() {
                             let mut app = InstalledApp::new(
                                 dir_name.to_string(),
@@ -374,7 +424,7 @@ impl PortableAppScanner {
                                     confidence: 0.8,
                                 },
                             );
-                            
+
                             app.install_location = Some(path.clone());
                             return Ok(Some(app));
                         }
@@ -382,7 +432,57 @@ impl PortableAppScanner {
                 }
             }
         }
-        
+
         Ok(None)
+    }
+}
+
+/// Adapter exposing the greek-platform Linux package scanner through the
+/// common `AppScanner` trait.
+#[cfg(target_os = "linux")]
+struct LinuxScannerAdapter(greek_platform::linux::LinuxPackageScanner);
+
+#[cfg(target_os = "linux")]
+#[async_trait]
+impl AppScanner for LinuxScannerAdapter {
+    fn scanner_id(&self) -> &'static str {
+        "linux-package"
+    }
+
+    fn scanner_name(&self) -> String {
+        "Linux Package Manager".to_string()
+    }
+
+    async fn scan(&self) -> Result<Vec<InstalledApp>> {
+        self.0.scan().await
+    }
+
+    fn requires_elevation(&self) -> bool {
+        true
+    }
+}
+
+/// Adapter exposing the greek-platform macOS app scanner through the common
+/// `AppScanner` trait.
+#[cfg(target_os = "macos")]
+struct MacOsScannerAdapter(greek_platform::macos::MacOsAppScanner);
+
+#[cfg(target_os = "macos")]
+#[async_trait]
+impl AppScanner for MacOsScannerAdapter {
+    fn scanner_id(&self) -> &'static str {
+        "macos-app"
+    }
+
+    fn scanner_name(&self) -> String {
+        "macOS Applications".to_string()
+    }
+
+    async fn scan(&self) -> Result<Vec<InstalledApp>> {
+        self.0.scan().await
+    }
+
+    fn requires_elevation(&self) -> bool {
+        false
     }
 }

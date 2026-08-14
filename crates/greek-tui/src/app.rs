@@ -1,16 +1,22 @@
 // Main TUI application
 
-use ratatui::Terminal;
+use crate::theme::TuiTheme;
+use crossterm::event::{
+    self, Event as CrosstermEvent, KeyCode, KeyModifiers, MouseButton, MouseEventKind,
+};
+use fuzzy_matcher::skim::SkimMatcherV2;
+use fuzzy_matcher::FuzzyMatcher;
+use greek_common::{
+    GreekConfig, InstallSource, InstalledApp, ProcessUsage, SystemStats, UninstallOptions,
+};
+use greek_core::GreekAppService;
 use ratatui::backend::CrosstermBackend;
 use ratatui::style::Color;
-use std::sync::{Arc, mpsc};
+use ratatui::Terminal;
+use std::sync::{mpsc, Arc};
+#[cfg(all(target_os = "windows", feature = "windows"))]
 use std::time::Duration;
 use tokio::sync::Mutex;
-use greek_common::{GreekConfig, InstalledApp, InstallSource, UninstallOptions};
-use greek_core::GreekAppService;
-use greek_windows::system_stats::{ProcessUsage, SystemStats, SystemStatsCollector};
-use crate::theme::TuiTheme;
-use crossterm::event::{self, Event as CrosstermEvent, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 
 pub struct TuiApp {
     _config: GreekConfig,
@@ -46,7 +52,13 @@ pub struct TuiApp {
 
     // System stats (bottom nav bar)
     stats: Option<SystemStats>,
+    #[cfg(all(target_os = "windows", feature = "windows"))]
     stats_receiver: Option<mpsc::Receiver<SystemStats>>,
+
+    // Search
+    search_query: String,
+    search_mode: bool,
+    fuzzy_matcher: SkimMatcherV2,
 }
 
 #[derive(Debug, Clone)]
@@ -68,20 +80,26 @@ pub enum OperationState {
 
 impl TuiApp {
     pub fn new(config: GreekConfig, service: GreekAppService) -> Self {
-        let (stats_tx, stats_rx) = mpsc::channel::<SystemStats>();
-        std::thread::spawn(move || {
-            let mut collector = SystemStatsCollector::new();
-            // Discard the first sample: the very first CPU delta after
-            // construction can be a bogus 100%.
-            collector.collect();
-            loop {
-                let stats = collector.collect();
-                if stats_tx.send(stats).is_err() {
-                    break;
+        let fuzzy_matcher = SkimMatcherV2::default();
+
+        #[cfg(all(target_os = "windows", feature = "windows"))]
+        let stats_receiver = {
+            let (stats_tx, stats_rx) = mpsc::channel::<SystemStats>();
+            let tx = stats_tx.clone();
+            std::thread::spawn(move || {
+                let mut collector = greek_windows::SystemStatsCollector::new();
+                // Discard first sample
+                let _ = collector.collect();
+                loop {
+                    let stats = collector.collect();
+                    if tx.send(stats).is_err() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_secs(2));
                 }
-                std::thread::sleep(Duration::from_secs(2));
-            }
-        });
+            });
+            Some(stats_rx)
+        };
 
         Self {
             _config: config,
@@ -105,14 +123,23 @@ impl TuiApp {
             scan_result_receiver: None,
             action_result_receiver: None,
             stats: None,
-            stats_receiver: Some(stats_rx),
+            search_query: String::new(),
+            search_mode: false,
+            fuzzy_matcher,
+            #[cfg(all(target_os = "windows", feature = "windows"))]
+            stats_receiver,
         }
     }
 
-    pub fn run(&mut self, terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn run(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         loop {
             self.check_results();
-            terminal.draw(|f| { crate::ui::render(f, self); })?;
+            terminal.draw(|f| {
+                crate::ui::render(f, self);
+            })?;
             if event::poll(std::time::Duration::from_millis(50))? {
                 match event::read()? {
                     CrosstermEvent::Key(key) => self.handle_key_event(key),
@@ -120,7 +147,9 @@ impl TuiApp {
                     _ => {}
                 }
             }
-            if self.should_quit { break; }
+            if self.should_quit {
+                break;
+            }
         }
         Ok(())
     }
@@ -133,13 +162,14 @@ impl TuiApp {
                     Ok(apps) => {
                         let count = apps.len();
                         self.apps = apps;
-                        self.filtered_apps = self.apps.clone();
+                        self.apply_filter();
                         self.selected_app_index = 0;
                         self.selected_apps.clear();
                         self.scroll_offset = 0;
                         self.scan_status = ScanStatus::Complete(count);
                         self.current_operation = None;
-                        self.status_message = Some((format!("Scan complete: {} apps found", count), false));
+                        self.status_message =
+                            Some((format!("Scan complete: {} apps found", count), false));
                     }
                     Err(e) => {
                         self.scan_status = ScanStatus::Error(e.clone());
@@ -167,9 +197,10 @@ impl TuiApp {
             }
         }
 
-        // Check system stats (sent every 2s by the collector thread)
+        // Poll live system stats (Windows-only collector)
+        #[cfg(all(target_os = "windows", feature = "windows"))]
         if let Some(receiver) = &self.stats_receiver {
-            if let Ok(stats) = receiver.try_recv() {
+            while let Ok(stats) = receiver.try_recv() {
                 self.stats = Some(stats);
             }
         }
@@ -183,7 +214,9 @@ impl TuiApp {
                     return;
                 }
                 let list_start: u16 = 4;
-                let list_end: u16 = crossterm::terminal::size().map(|(_, h)| h - 4).unwrap_or(21);
+                let list_end: u16 = crossterm::terminal::size()
+                    .map(|(_, h)| h - 4)
+                    .unwrap_or(21);
                 if mouse.row >= list_start && mouse.row < list_end {
                     let idx = (mouse.row - list_start) as usize + self.scroll_offset;
                     if idx < self.filtered_apps.len() {
@@ -192,9 +225,14 @@ impl TuiApp {
                 }
             }
             MouseEventKind::Down(MouseButton::Right) => {
-                if self.show_context_menu { self.show_context_menu = false; return; }
+                if self.show_context_menu {
+                    self.show_context_menu = false;
+                    return;
+                }
                 let list_start: u16 = 4;
-                let list_end: u16 = crossterm::terminal::size().map(|(_, h)| h - 4).unwrap_or(21);
+                let list_end: u16 = crossterm::terminal::size()
+                    .map(|(_, h)| h - 4)
+                    .unwrap_or(21);
                 if mouse.row >= list_start && mouse.row < list_end {
                     let idx = (mouse.row - list_start) as usize + self.scroll_offset;
                     if idx < self.filtered_apps.len() {
@@ -202,16 +240,22 @@ impl TuiApp {
                         self.show_context_menu = true;
                         self.context_menu_index = 0;
                         self.context_menu_app = Some(self.filtered_apps[idx].clone());
-                        self.context_menu_y = mouse.row.min(crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24) - 9);
+                        self.context_menu_y = mouse
+                            .row
+                            .min(crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24) - 9);
                     }
                 }
             }
             MouseEventKind::ScrollUp => {
-                if self.scroll_offset > 0 { self.scroll_offset -= 1; }
+                if self.scroll_offset > 0 {
+                    self.scroll_offset -= 1;
+                }
             }
             MouseEventKind::ScrollDown => {
                 let max = self.filtered_apps.len().saturating_sub(1);
-                if self.scroll_offset < max { self.scroll_offset += 1; }
+                if self.scroll_offset < max {
+                    self.scroll_offset += 1;
+                }
             }
             _ => {}
         }
@@ -231,10 +275,20 @@ impl TuiApp {
     fn execute_action(&mut self, action: Action) {
         self.show_context_menu = false;
         let app = match action {
-            Action::ViewDetails => { self.show_details = true; return; }
+            Action::ViewDetails => {
+                self.show_details = true;
+                return;
+            }
             Action::Cancel => return,
-            Action::Uninstall | Action::ForceRemove | Action::ScanLeftovers | Action::AddToBatch => {
-                match self.context_menu_app.as_ref().or_else(|| self.filtered_apps.get(self.selected_app_index)) {
+            Action::Uninstall
+            | Action::ForceRemove
+            | Action::ScanLeftovers
+            | Action::AddToBatch => {
+                match self
+                    .context_menu_app
+                    .as_ref()
+                    .or_else(|| self.filtered_apps.get(self.selected_app_index))
+                {
                     Some(a) => a.clone(),
                     None => return,
                 }
@@ -248,42 +302,54 @@ impl TuiApp {
         match action {
             Action::Uninstall => {
                 self.current_operation = Some(OperationState::Uninstalling(app.name.clone()));
-                std::thread::spawn(move || {
+                tokio::task::spawn_blocking(move || {
                     let rt = tokio::runtime::Runtime::new().unwrap();
                     let result = rt.block_on(async {
                         let svc = service.lock().await;
                         svc.uninstall_app(&app, UninstallOptions::standard()).await
                     });
                     let _ = tx.send(match result {
-                        Ok(r) => Ok(format!("Uninstall {}: {}", app.name, if r.success { "Success" } else { "Failed" })),
+                        Ok(r) => Ok(format!(
+                            "Uninstall {}: {}",
+                            app.name,
+                            if r.success { "Success" } else { "Failed" }
+                        )),
                         Err(e) => Err(format!("Uninstall failed: {}", e)),
                     });
                 });
             }
             Action::ForceRemove => {
                 self.current_operation = Some(OperationState::ForceRemoving(app.name.clone()));
-                std::thread::spawn(move || {
+                tokio::task::spawn_blocking(move || {
                     let rt = tokio::runtime::Runtime::new().unwrap();
                     let result = rt.block_on(async {
                         let svc = service.lock().await;
                         svc.force_remove_app(&app, UninstallOptions::force()).await
                     });
                     let _ = tx.send(match result {
-                        Ok(r) => Ok(format!("Force remove {}: {}", app.name, if r.success { "Success" } else { "Failed" })),
+                        Ok(r) => Ok(format!(
+                            "Force remove {}: {}",
+                            app.name,
+                            if r.success { "Success" } else { "Failed" }
+                        )),
                         Err(e) => Err(format!("Force remove failed: {}", e)),
                     });
                 });
             }
             Action::ScanLeftovers => {
                 self.current_operation = Some(OperationState::AnalyzingLeftovers(app.name.clone()));
-                std::thread::spawn(move || {
+                tokio::task::spawn_blocking(move || {
                     let rt = tokio::runtime::Runtime::new().unwrap();
                     let result = rt.block_on(async {
                         let svc = service.lock().await;
                         svc.analyze_leftovers(&app).await
                     });
                     let _ = tx.send(match result {
-                        Ok(artifacts) => Ok(format!("Leftover scan for {}: {} artifacts found", app.name, artifacts.len())),
+                        Ok(artifacts) => Ok(format!(
+                            "Leftover scan for {}: {} artifacts found",
+                            app.name,
+                            artifacts.len()
+                        )),
                         Err(e) => Err(format!("Leftover scan failed: {}", e)),
                     });
                 });
@@ -305,15 +371,35 @@ impl TuiApp {
             return;
         }
 
+        if self.search_mode {
+            match key.code {
+                KeyCode::Char('/') | KeyCode::Esc => {
+                    self.toggle_search();
+                }
+                KeyCode::Backspace => {
+                    self.search_backspace();
+                }
+                KeyCode::Char(c) => {
+                    self.search_input(c);
+                }
+                _ => {}
+            }
+            return;
+        }
+
         if self.show_context_menu {
             match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => { self.show_context_menu = false; }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.show_context_menu = false;
+                }
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.context_menu_index = self.context_menu_index.saturating_sub(1);
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     let max = context_menu_items().len().saturating_sub(1);
-                    if self.context_menu_index < max { self.context_menu_index += 1; }
+                    if self.context_menu_index < max {
+                        self.context_menu_index += 1;
+                    }
                 }
                 KeyCode::Enter | KeyCode::Char(' ') => {
                     let action = context_menu_items()[self.context_menu_index];
@@ -326,7 +412,9 @@ impl TuiApp {
 
         match key.code {
             // Quit
-            KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('q') | KeyCode::Char('c')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
                 self.should_quit = true;
             }
             KeyCode::Esc => {
@@ -339,7 +427,12 @@ impl TuiApp {
             }
 
             // Help
-            KeyCode::Char('?') | KeyCode::Char('h') => { self.show_help = true; }
+            KeyCode::Char('?') | KeyCode::Char('h') => {
+                self.show_help = true;
+            }
+            KeyCode::Char('/') => {
+                self.toggle_search();
+            }
 
             // Navigation
             KeyCode::Up | KeyCode::Char('k') => {
@@ -354,7 +447,10 @@ impl TuiApp {
                     self.ensure_visible();
                 }
             }
-            KeyCode::Home => { self.selected_app_index = 0; self.scroll_offset = 0; }
+            KeyCode::Home => {
+                self.selected_app_index = 0;
+                self.scroll_offset = 0;
+            }
             KeyCode::End => {
                 self.selected_app_index = self.filtered_apps.len().saturating_sub(1);
                 self.ensure_visible();
@@ -364,7 +460,8 @@ impl TuiApp {
                 self.ensure_visible();
             }
             KeyCode::PageDown => {
-                self.selected_app_index = (self.selected_app_index + 20).min(self.filtered_apps.len().saturating_sub(1));
+                self.selected_app_index =
+                    (self.selected_app_index + 20).min(self.filtered_apps.len().saturating_sub(1));
                 self.ensure_visible();
             }
 
@@ -375,7 +472,11 @@ impl TuiApp {
 
             // Selection
             KeyCode::Char(' ') => {
-                if let Some(pos) = self.selected_apps.iter().position(|&i| i == self.selected_app_index) {
+                if let Some(pos) = self
+                    .selected_apps
+                    .iter()
+                    .position(|&i| i == self.selected_app_index)
+                {
                     self.selected_apps.remove(pos);
                 } else {
                     self.selected_apps.push(self.selected_app_index);
@@ -387,7 +488,9 @@ impl TuiApp {
             KeyCode::Char('a') => {
                 self.selected_apps = (0..self.filtered_apps.len()).collect();
             }
-            KeyCode::Char('n') => { self.selected_apps.clear(); }
+            KeyCode::Char('n') => {
+                self.selected_apps.clear();
+            }
 
             // Actions on selected app
             KeyCode::Char('u') | KeyCode::Char('U') => {
@@ -417,7 +520,8 @@ impl TuiApp {
                     let (_, h) = crossterm::terminal::size().unwrap_or((80, 24));
                     let menu_items = context_menu_items();
                     let list_row = (self.selected_app_index - self.scroll_offset) as u16 + 4;
-                    self.context_menu_y = list_row.min(h.saturating_sub(menu_items.len() as u16 + 3));
+                    self.context_menu_y =
+                        list_row.min(h.saturating_sub(menu_items.len() as u16 + 3));
                 }
             }
             _ => {}
@@ -435,26 +539,31 @@ impl TuiApp {
     }
 
     fn trigger_rescan(&mut self) {
-        if matches!(self.scan_status, ScanStatus::Scanning) { return; }
+        if matches!(self.scan_status, ScanStatus::Scanning) {
+            return;
+        }
         self.scan_status = ScanStatus::Scanning;
         self.current_operation = Some(OperationState::Scanning);
         let service = Arc::clone(&self.service);
         let (tx, rx) = mpsc::channel();
         self.scan_result_receiver = Some(rx);
-        std::thread::spawn(move || {
+        tokio::task::spawn_blocking(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let result = rt.block_on(async {
                 let svc = service.lock().await;
                 svc.scan_all_apps().await
             });
-            let _ = tx.send(match result { Ok(a) => Ok(a), Err(e) => Err(e.to_string()) });
+            let _ = tx.send(match result {
+                Ok(a) => Ok(a),
+                Err(e) => Err(e.to_string()),
+            });
         });
     }
 
     pub fn set_apps(&mut self, apps: Vec<InstalledApp>) {
         let count = apps.len();
         self.apps = apps;
-        self.filtered_apps = self.apps.clone();
+        self.apply_filter();
         self.selected_app_index = 0;
         self.selected_apps.clear();
         self.scroll_offset = 0;
@@ -467,27 +576,112 @@ impl TuiApp {
         self.current_operation = None;
     }
 
+    /// Apply the current search query to filter the app list.
+    fn apply_filter(&mut self) {
+        if self.search_query.is_empty() {
+            self.filtered_apps = self.apps.clone();
+        } else {
+            let query = self.search_query.clone();
+            let matcher = &self.fuzzy_matcher;
+            self.filtered_apps = self
+                .apps
+                .iter()
+                .filter(|app| {
+                    matcher.fuzzy_match(&app.name, &query).is_some()
+                        || app.name.to_lowercase().contains(&query.to_lowercase())
+                        || app
+                            .publisher
+                            .as_ref()
+                            .map(|p| p.to_lowercase().contains(&query.to_lowercase()))
+                            .unwrap_or(false)
+                })
+                .cloned()
+                .collect();
+        }
+    }
+
+    /// Start or cancel search mode.
+    pub fn toggle_search(&mut self) {
+        self.search_mode = !self.search_mode;
+        if !self.search_mode {
+            self.search_query.clear();
+            self.apply_filter();
+        }
+    }
+
+    /// Type a character into the search box.
+    pub fn search_input(&mut self, ch: char) {
+        self.search_query.push(ch);
+        self.apply_filter();
+    }
+
+    /// Delete the last character in the search query.
+    pub fn search_backspace(&mut self) {
+        self.search_query.pop();
+        self.apply_filter();
+    }
+
+    pub fn search_query(&self) -> &str {
+        &self.search_query
+    }
+
+    pub fn is_search_mode(&self) -> bool {
+        self.search_mode
+    }
+
     // Accessors
     pub fn selected_app(&self) -> Option<&InstalledApp> {
         self.filtered_apps.get(self.selected_app_index)
     }
-    pub fn theme(&self) -> &TuiTheme { &self.theme }
-    pub fn is_showing_details(&self) -> bool { self.show_details }
-    pub fn is_showing_help(&self) -> bool { self.show_help }
-    pub fn scan_status(&self) -> &ScanStatus { &self.scan_status }
-    pub fn current_operation(&self) -> Option<&OperationState> { self.current_operation.as_ref() }
-    pub fn status_message(&self) -> Option<&(String, bool)> { self.status_message.as_ref() }
-    pub fn get_filtered_apps(&self) -> &[InstalledApp] { &self.filtered_apps }
-    pub fn get_all_apps(&self) -> &[InstalledApp] { &self.apps }
-    pub fn get_selected_index(&self) -> usize { self.selected_app_index }
-    pub fn get_selected_apps(&self) -> &[usize] { &self.selected_apps }
-    pub fn scroll_offset(&self) -> usize { self.scroll_offset }
-    pub fn show_context_menu(&self) -> bool { self.show_context_menu }
-    pub fn context_menu_index(&self) -> usize { self.context_menu_index }
-    pub fn context_menu_y(&self) -> u16 { self.context_menu_y }
-    pub fn stats(&self) -> Option<&SystemStats> { self.stats.as_ref() }
+    pub fn theme(&self) -> &TuiTheme {
+        &self.theme
+    }
+    pub fn is_showing_details(&self) -> bool {
+        self.show_details
+    }
+    pub fn is_showing_help(&self) -> bool {
+        self.show_help
+    }
+    pub fn scan_status(&self) -> &ScanStatus {
+        &self.scan_status
+    }
+    pub fn current_operation(&self) -> Option<&OperationState> {
+        self.current_operation.as_ref()
+    }
+    pub fn status_message(&self) -> Option<&(String, bool)> {
+        self.status_message.as_ref()
+    }
+    pub fn get_filtered_apps(&self) -> &[InstalledApp] {
+        &self.filtered_apps
+    }
+    pub fn get_all_apps(&self) -> &[InstalledApp] {
+        &self.apps
+    }
+    pub fn get_selected_index(&self) -> usize {
+        self.selected_app_index
+    }
+    pub fn get_selected_apps(&self) -> &[usize] {
+        &self.selected_apps
+    }
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+    pub fn show_context_menu(&self) -> bool {
+        self.show_context_menu
+    }
+    pub fn context_menu_index(&self) -> usize {
+        self.context_menu_index
+    }
+    pub fn context_menu_y(&self) -> u16 {
+        self.context_menu_y
+    }
+    pub fn stats(&self) -> Option<&SystemStats> {
+        self.stats.as_ref()
+    }
 
     /// Live process usage for an app, matched by exe path or install location.
+    /// On non-Windows platforms this always returns None (no process data).
+    #[cfg(all(target_os = "windows", feature = "windows"))]
     pub fn process_for(&self, app: &InstalledApp) -> Option<&ProcessUsage> {
         let stats = self.stats.as_ref()?;
         // 1. Exact match on exe_path metadata
@@ -500,16 +694,30 @@ impl TuiApp {
         // 2. Match by install_location parent directory
         if let Some(loc) = &app.install_location {
             let loc_lower = loc.to_string_lossy().to_lowercase();
-            if let Some((_, p)) = stats.processes.iter().find(|(k, _)| k.starts_with(&loc_lower)) {
+            if let Some((_, p)) = stats
+                .processes
+                .iter()
+                .find(|(k, _)| k.starts_with(&loc_lower))
+            {
                 return Some(p);
             }
         }
         // 3. Last resort: match by app name in the exe path
         let name_lower = app.name.to_lowercase();
-        stats.processes.iter().find(|(_k, p)| {
-            p.name.to_lowercase().contains(&name_lower)
-                || name_lower.contains(&p.name.trim_end_matches(".exe").to_lowercase())
-        }).map(|(_, p)| p)
+        stats
+            .processes
+            .iter()
+            .find(|(_k, p)| {
+                p.name.to_lowercase().contains(&name_lower)
+                    || name_lower.contains(&p.name.trim_end_matches(".exe").to_lowercase())
+            })
+            .map(|(_, p)| p)
+    }
+
+    /// Non-Windows stub: no process usage data available.
+    #[cfg(not(all(target_os = "windows", feature = "windows")))]
+    pub fn process_for(&self, _app: &InstalledApp) -> Option<&ProcessUsage> {
+        None
     }
 }
 
@@ -537,17 +745,17 @@ pub fn context_menu_items() -> &'static [Action] {
 /// Returns a Unicode icon based on the app's install source
 pub fn app_icon(app: &InstalledApp) -> &'static str {
     match &app.source {
-        InstallSource::WindowsStore { .. } => "\u{1F4E6}",    // 📦
-        InstallSource::Registry { .. } => "\u{1F4BB}",         // 💻
-        InstallSource::Portable { .. } => "\u{1F50D}",         // 🔍
+        InstallSource::WindowsStore { .. } => "\u{1F4E6}", // 📦
+        InstallSource::Registry { .. } => "\u{1F4BB}",     // 💻
+        InstallSource::Portable { .. } => "\u{1F50D}",     // 🔍
         InstallSource::BrowserExtension { browser, .. } => match browser {
-            greek_common::BrowserType::Chrome => "\u{1F310}",  // 🌐
+            greek_common::BrowserType::Chrome => "\u{1F310}", // 🌐
             greek_common::BrowserType::Firefox => "\u{1F525}", // 🔥
-            greek_common::BrowserType::Edge => "\u{1F310}",    // 🌐
-            _ => "\u{1F517}",                                   // 🔗
+            greek_common::BrowserType::Edge => "\u{1F310}",   // 🌐
+            _ => "\u{1F517}",                                 // 🔗
         },
-        InstallSource::WindowsFeature { .. } => "\u{2699}",    // ⚙
-        InstallSource::PackageManager { .. } => "\u{1F4E6}",   // 📦
+        InstallSource::WindowsFeature { .. } => "\u{2699}", // ⚙
+        InstallSource::PackageManager { .. } => "\u{1F4E6}", // 📦
     }
 }
 

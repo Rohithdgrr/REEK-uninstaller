@@ -1,9 +1,9 @@
 // Utility functions for REEK Ultimate Uninstaller
 
 use greek_common::{GreekError, Result};
-use std::path::{Path, PathBuf};
-use sha2::{Sha256, Digest};
 use humansize::{format_size, BINARY};
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
 
 pub fn calculate_file_hash(path: &Path) -> Result<String> {
     let mut file = std::fs::File::open(path)?;
@@ -32,14 +32,14 @@ pub fn normalize_path(path: &Path) -> PathBuf {
 
 pub fn is_protected_path(path: &Path, protected_paths: &[String]) -> bool {
     let path_str = path.to_string_lossy().to_lowercase();
-    
+
     for protected in protected_paths {
         let protected_lower = protected.to_lowercase();
         if path_str.starts_with(&protected_lower) {
             return true;
         }
     }
-    
+
     false
 }
 
@@ -57,7 +57,7 @@ pub fn get_file_size(path: &Path) -> Result<u64> {
 
 pub fn get_directory_size(path: &Path) -> Result<u64> {
     let mut total_size = 0u64;
-    
+
     for entry in walkdir::WalkDir::new(path)
         .into_iter()
         .filter_map(|e| e.ok())
@@ -68,7 +68,7 @@ pub fn get_directory_size(path: &Path) -> Result<u64> {
             }
         }
     }
-    
+
     Ok(total_size)
 }
 
@@ -91,42 +91,119 @@ pub fn move_to_recycle_bin(path: &Path) -> Result<()> {
         tracing::warn!("Recycle bin not implemented yet, deleting directly");
         delete_directory(path)?;
     }
-    
+
     #[cfg(target_os = "linux")]
     {
         // Linux-specific implementation (trash-cli or similar)
         tracing::warn!("Recycle bin not implemented yet, deleting directly");
         delete_directory(path)?;
     }
-    
+
     #[cfg(target_os = "macos")]
     {
         // macOS-specific implementation
         tracing::warn!("Recycle bin not implemented yet, deleting directly");
         delete_directory(path)?;
     }
-    
+
     Ok(())
 }
 
+/// Delete a registry key (subkey) by its full path, e.g.
+/// `HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\Foo`.
+///
+/// On Windows this removes the subkey using the registry API. On other
+/// platforms this is a no-op returning Ok (there is no registry to delete).
+pub fn delete_registry_key(path: &str) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        use greek_common::{GreekError, RegistryHive};
+        use winreg::enums::*;
+        use winreg::RegKey;
+
+        let path = path.trim();
+        if path.is_empty() {
+            return Err(GreekError::RegistryError(
+                "Empty registry key path".to_string(),
+            ));
+        }
+
+        // Parse hive prefix (e.g. "HKLM\" or "HKLM\\")
+        let (hive, remainder) = if let Some(rest) = path.strip_prefix("HKLM\\") {
+            (RegistryHive::Hklm, rest)
+        } else if let Some(rest) = path.strip_prefix("HKLM\\\\") {
+            (RegistryHive::Hklm, rest)
+        } else if let Some(rest) = path.strip_prefix("HKCU\\") {
+            (RegistryHive::Hkcu, rest)
+        } else if let Some(rest) = path.strip_prefix("HKCU\\\\") {
+            (RegistryHive::Hkcu, rest)
+        } else {
+            // Fall back to HKLM for registry keys without an explicit hive
+            // (keys created by the scanners always include a hive prefix).
+            return Err(GreekError::RegistryError(format!(
+                "Cannot determine registry hive from path: {}",
+                path
+            )));
+        };
+
+        // The path is "Software\...\Uninstall\AppName"; the key to delete is
+        // the leaf, and its parent is the rest.
+        let (parent_path, leaf) = match remainder.rfind('\\') {
+            Some(idx) => (&remainder[..idx], &remainder[idx + 1..]),
+            None => {
+                return Err(GreekError::RegistryError(format!(
+                    "Registry key path has no parent: {}",
+                    path
+                )));
+            }
+        };
+
+        let root = match hive {
+            RegistryHive::Hklm => HKEY_LOCAL_MACHINE,
+            RegistryHive::Hkcu => HKEY_CURRENT_USER,
+        };
+
+        let parent = RegKey::predef(root).open_subkey(parent_path).map_err(|e| {
+            GreekError::RegistryError(format!("Failed to open {}: {}", parent_path, e))
+        })?;
+
+        // Recursively delete the subkey.
+        parent.delete_subkey_all(leaf).map_err(|e| {
+            GreekError::RegistryError(format!("Failed to delete key {}: {}", path, e))
+        })?;
+
+        tracing::info!("Deleted registry key: {}", path);
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
 pub fn get_app_data_dir() -> Result<PathBuf> {
-    let proj_dirs = directories::ProjectDirs::from("com", "reek", "reek-uninstaller")
-        .ok_or(GreekError::ConfigError("Failed to get project directories".to_string()))?;
-    
+    let proj_dirs = directories::ProjectDirs::from("com", "reek", "reek-uninstaller").ok_or(
+        GreekError::ConfigError("Failed to get project directories".to_string()),
+    )?;
+
     Ok(proj_dirs.data_dir().to_path_buf())
 }
 
 pub fn get_config_dir() -> Result<PathBuf> {
-    let proj_dirs = directories::ProjectDirs::from("com", "reek", "reek-uninstaller")
-        .ok_or(GreekError::ConfigError("Failed to get project directories".to_string()))?;
-    
+    let proj_dirs = directories::ProjectDirs::from("com", "reek", "reek-uninstaller").ok_or(
+        GreekError::ConfigError("Failed to get project directories".to_string()),
+    )?;
+
     Ok(proj_dirs.config_dir().to_path_buf())
 }
 
 pub fn get_cache_dir() -> Result<PathBuf> {
-    let proj_dirs = directories::ProjectDirs::from("com", "reek", "reek-uninstaller")
-        .ok_or(GreekError::ConfigError("Failed to get project directories".to_string()))?;
-    
+    let proj_dirs = directories::ProjectDirs::from("com", "reek", "reek-uninstaller").ok_or(
+        GreekError::ConfigError("Failed to get project directories".to_string()),
+    )?;
+
     Ok(proj_dirs.cache_dir().to_path_buf())
 }
 
@@ -144,13 +221,16 @@ mod tests {
 
     #[test]
     fn test_is_protected_path() {
-        let protected = vec![
-            "C:\\Windows".to_string(),
-            "C:\\Program Files".to_string(),
-        ];
-        
-        assert!(is_protected_path(Path::new("C:\\Windows\\System32"), &protected));
-        assert!(is_protected_path(Path::new("C:\\Program Files\\App"), &protected));
+        let protected = vec!["C:\\Windows".to_string(), "C:\\Program Files".to_string()];
+
+        assert!(is_protected_path(
+            Path::new("C:\\Windows\\System32"),
+            &protected
+        ));
+        assert!(is_protected_path(
+            Path::new("C:\\Program Files\\App"),
+            &protected
+        ));
         assert!(!is_protected_path(Path::new("C:\\Users\\Test"), &protected));
     }
 
@@ -158,7 +238,7 @@ mod tests {
     fn test_ensure_directory_exists() {
         let temp_dir = TempDir::new().unwrap();
         let test_path = temp_dir.path().join("test").join("nested");
-        
+
         assert!(!test_path.exists());
         ensure_directory_exists(&test_path).unwrap();
         assert!(test_path.exists());
@@ -168,9 +248,9 @@ mod tests {
     fn test_get_file_size() {
         let temp_dir = TempDir::new().unwrap();
         let test_file = temp_dir.path().join("test.txt");
-        
+
         std::fs::write(&test_file, b"Hello, World!").unwrap();
-        
+
         let size = get_file_size(&test_file).unwrap();
         assert_eq!(size, 13);
     }

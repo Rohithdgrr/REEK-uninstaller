@@ -1,6 +1,6 @@
 // Windows System Restore point management
 
-use greek_common::{Result, GreekError};
+use greek_common::{GreekError, Result};
 use tracing::{info, warn};
 
 /// System restore point manager
@@ -33,11 +33,18 @@ impl RestorePointManager {
             info!("System restore point created successfully");
             Ok(description.to_string())
         } else if output.contains("already in progress") {
-            Err(GreekError::SystemError("A restore point creation is already in progress".to_string()))
+            Err(GreekError::SystemError(
+                "A restore point creation is already in progress".to_string(),
+            ))
         } else if output.contains("not enabled") {
-            Err(GreekError::SystemError("System Restore is not enabled on this system".to_string()))
+            Err(GreekError::SystemError(
+                "System Restore is not enabled on this system".to_string(),
+            ))
         } else {
-            Err(GreekError::SystemError(format!("Failed to create restore point: {}", output)))
+            Err(GreekError::SystemError(format!(
+                "Failed to create restore point: {}",
+                output
+            )))
         }
     }
 
@@ -57,8 +64,9 @@ impl RestorePointManager {
             return Ok(Vec::new());
         }
 
-        let points_json: Vec<serde_json::Value> = serde_json::from_str(&output)
-            .map_err(|e| GreekError::SystemError(format!("Failed to parse restore points: {}", e)))?;
+        let points_json: Vec<serde_json::Value> = serde_json::from_str(&output).map_err(|e| {
+            GreekError::SystemError(format!("Failed to parse restore points: {}", e))
+        })?;
 
         let points: Vec<RestorePoint> = points_json
             .into_iter()
@@ -78,19 +86,25 @@ impl RestorePointManager {
 
     /// Delete old restore points (keep most recent N)
     pub async fn cleanup_old_restore_points(&self, keep_count: usize) -> Result<usize> {
-        info!("Cleaning up old restore points, keeping {} most recent", keep_count);
+        info!(
+            "Cleaning up old restore points, keeping {} most recent",
+            keep_count
+        );
 
         let points = self.list_restore_points().await?;
         let mut deleted_count = 0;
 
         // Sort by sequence number (newest first)
         let mut sorted_points = points;
-        sorted_points.sort_by(|a, b| b.sequence_number.cmp(&a.sequence_number));
+        sorted_points.sort_by_key(|p| std::cmp::Reverse(p.sequence_number));
 
         // Delete points beyond keep_count
         for point in sorted_points.iter().skip(keep_count) {
             if let Err(e) = self.delete_restore_point(point.sequence_number).await {
-                warn!("Failed to delete restore point {}: {}", point.sequence_number, e);
+                warn!(
+                    "Failed to delete restore point {}: {}",
+                    point.sequence_number, e
+                );
             } else {
                 deleted_count += 1;
             }
@@ -101,12 +115,11 @@ impl RestorePointManager {
     }
 
     /// Delete a specific restore point
-    async fn delete_restore_point(&self, sequence_number: u64) -> Result<()> {
-        let ps_command = format!(
-            r#"
+    async fn delete_restore_point(&self, _sequence_number: u64) -> Result<()> {
+        let ps_command = r#"
             vssadmin delete shadows /for=C: /oldest /quiet
-            "#,
-        );
+            "#
+        .to_string();
 
         // Note: Windows doesn't provide a direct way to delete specific restore points
         // We can only delete oldest shadow copies
@@ -137,7 +150,7 @@ impl RestorePointManager {
     /// Get restore point statistics
     pub async fn get_statistics(&self) -> Result<RestoreStatistics> {
         let points = self.list_restore_points().await?;
-        
+
         Ok(RestoreStatistics {
             total_points: points.len(),
             oldest_point: points.iter().min_by_key(|p| p.sequence_number).cloned(),
@@ -150,12 +163,7 @@ impl RestorePointManager {
         use std::process::Command;
 
         let output = Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                command,
-            ])
+            .args(["-NoProfile", "-NonInteractive", "-Command", command])
             .output()
             .map_err(|e| GreekError::SystemError(format!("Failed to execute PowerShell: {}", e)))?;
 
@@ -165,7 +173,10 @@ impl RestorePointManager {
             if !stderr.contains("not recognized") {
                 return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
             }
-            return Err(GreekError::SystemError(format!("PowerShell command failed: {}", stderr)));
+            return Err(GreekError::SystemError(format!(
+                "PowerShell command failed: {}",
+                stderr
+            )));
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -202,7 +213,8 @@ mod tests {
     #[tokio::test]
     async fn test_restore_manager_creation() {
         let manager = RestorePointManager::new();
-        assert!(true);
+        // Environment-dependent, so only verify the manager is usable.
+        let _ = manager.list_restore_points().await;
     }
 
     #[tokio::test]

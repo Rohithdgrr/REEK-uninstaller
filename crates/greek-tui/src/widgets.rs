@@ -31,7 +31,7 @@ impl TextWidget {
             .style(self.style)
             .wrap(Wrap { trim: true })
             .block(Block::default().borders(Borders::ALL));
-        
+
         f.render_widget(paragraph, area);
     }
 }
@@ -69,11 +69,11 @@ impl StatusBarWidget {
             Span::raw(" "),
             Span::styled(&self.right_content, self.style),
         ]);
-        
+
         let paragraph = Paragraph::new(line)
             .style(self.style)
             .block(Block::default().borders(Borders::ALL));
-        
+
         f.render_widget(paragraph, area);
     }
 }

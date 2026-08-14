@@ -62,12 +62,7 @@ impl IconExtractor {
     }
 
     fn parse_icon_path(s: &str) -> Option<PathBuf> {
-        let clean = s
-            .split(',')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .trim_matches('"');
+        let clean = s.split(',').next().unwrap_or("").trim().trim_matches('"');
         if clean.is_empty() {
             return None;
         }
@@ -89,14 +84,16 @@ impl IconExtractor {
     /// Returns the number of icons extracted.
     pub fn extract_icons(&self, apps: &mut [InstalledApp]) -> usize {
         let mut jobs: Vec<IconJob> = Vec::new();
-        for i in 0..apps.len() {
-            if apps[i].icon_path.is_some() {
+        for (i, app) in apps.iter_mut().enumerate() {
+            if app.icon_path.is_some() {
                 continue;
             }
-            let Some(exe) = Self::find_exe_path(&apps[i]) else { continue };
+            let Some(exe) = Self::find_exe_path(app) else {
+                continue;
+            };
             let cache = self.cache_file(&exe);
             if cache.exists() {
-                apps[i].icon_path = Some(cache);
+                app.icon_path = Some(cache);
             } else {
                 jobs.push(IconJob {
                     idx: i,
@@ -262,8 +259,16 @@ mod tests {
     #[test]
     fn test_build_ps_script_no_trailing_comma() {
         let jobs = vec![
-            IconJob { idx: 0, exe: r"C:\a\b.exe".into(), cache: PathBuf::from(r"C:\cache\1.png") },
-            IconJob { idx: 1, exe: r"C:\a\c.exe".into(), cache: PathBuf::from(r"C:\cache\2.png") },
+            IconJob {
+                idx: 0,
+                exe: r"C:\a\b.exe".into(),
+                cache: PathBuf::from(r"C:\cache\1.png"),
+            },
+            IconJob {
+                idx: 1,
+                exe: r"C:\a\c.exe".into(),
+                cache: PathBuf::from(r"C:\cache\2.png"),
+            },
         ];
         let script = build_ps_script(&jobs);
         assert!(script.contains("@('C:\\a\\b.exe','C:\\cache\\1.png')"));

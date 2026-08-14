@@ -83,9 +83,9 @@ mod tests {
     async fn test_event_handler() {
         let mut handler = EventHandler::new();
         let sender = handler.sender();
-        
+
         sender.send(Event::Tick).unwrap();
-        
+
         let event = handler.next().await;
         assert_eq!(event, Some(Event::Tick));
     }

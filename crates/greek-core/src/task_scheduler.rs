@@ -1,9 +1,8 @@
 // Task Scheduler scanner for discovering scheduled tasks
 
-use greek_common::{InstalledApp, Result, GreekError, ArtifactType, LeftoverArtifact, SafetyLevel};
-use tracing::{info, warn};
+use greek_common::{ArtifactType, GreekError, InstalledApp, LeftoverArtifact, Result, SafetyLevel};
 use std::path::PathBuf;
-use chrono::NaiveDate;
+use tracing::{info, warn};
 
 /// Scheduled task information
 #[derive(Debug, Clone)]
@@ -124,31 +123,48 @@ impl TaskSchedulerScanner {
             _ => TaskState::Unknown,
         };
 
-        let actions = task.get("Actions")
+        let actions = task
+            .get("Actions")
             .and_then(|a| a.as_array())
             .map(|arr| {
                 arr.iter()
                     .filter_map(|action| {
                         Some(TaskAction {
                             action_type: action.get("Type")?.as_str()?.to_string(),
-                            execute: action.get("Execute").and_then(|e| e.as_str()).map(String::from),
-                            arguments: action.get("Arguments").and_then(|a| a.as_str()).map(String::from),
-                            working_directory: action.get("WorkingDirectory").and_then(|w| w.as_str()).map(String::from),
+                            execute: action
+                                .get("Execute")
+                                .and_then(|e| e.as_str())
+                                .map(String::from),
+                            arguments: action
+                                .get("Arguments")
+                                .and_then(|a| a.as_str())
+                                .map(String::from),
+                            working_directory: action
+                                .get("WorkingDirectory")
+                                .and_then(|w| w.as_str())
+                                .map(String::from),
                         })
                     })
                     .collect()
             })
             .unwrap_or_default();
 
-        let triggers = task.get("Triggers")
+        let triggers = task
+            .get("Triggers")
             .and_then(|t| t.as_array())
             .map(|arr| {
                 arr.iter()
                     .filter_map(|trigger| {
                         Some(TaskTrigger {
                             trigger_type: trigger.get("Type")?.as_str()?.to_string(),
-                            start_boundary: trigger.get("StartBoundary").and_then(|s| s.as_str()).map(String::from),
-                            enabled: trigger.get("Enabled").and_then(|e| e.as_bool()).unwrap_or(true),
+                            start_boundary: trigger
+                                .get("StartBoundary")
+                                .and_then(|s| s.as_str())
+                                .map(String::from),
+                            enabled: trigger
+                                .get("Enabled")
+                                .and_then(|e| e.as_bool())
+                                .unwrap_or(true),
                         })
                     })
                     .collect()
@@ -161,48 +177,72 @@ impl TaskSchedulerScanner {
             state,
             actions,
             triggers,
-            author: task.get("Author").and_then(|a| a.as_str()).map(String::from),
-            description: task.get("Description").and_then(|d| d.as_str()).map(String::from),
-            run_as_user: task.get("Principal").and_then(|p| p.as_str()).map(String::from),
-            last_run_time: task.get("LastRunTime").and_then(|l| l.as_str()).map(String::from),
-            next_run_time: task.get("NextRunTime").and_then(|n| n.as_str()).map(String::from),
+            author: task
+                .get("Author")
+                .and_then(|a| a.as_str())
+                .map(String::from),
+            description: task
+                .get("Description")
+                .and_then(|d| d.as_str())
+                .map(String::from),
+            run_as_user: task
+                .get("Principal")
+                .and_then(|p| p.as_str())
+                .map(String::from),
+            last_run_time: task
+                .get("LastRunTime")
+                .and_then(|l| l.as_str())
+                .map(String::from),
+            next_run_time: task
+                .get("NextRunTime")
+                .and_then(|n| n.as_str())
+                .map(String::from),
         })
     }
 
     /// Find tasks that might be related to an application
     pub async fn find_tasks_for_app(&self, app: &InstalledApp) -> Result<Vec<ScheduledTask>> {
         let all_tasks = self.scan_tasks().await?;
-        
+
         let app_name_lower = app.name.to_lowercase();
         let publisher_lower = app.publisher.as_ref().map(|p| p.to_lowercase());
-        
+
         let matching_tasks: Vec<ScheduledTask> = all_tasks
             .into_iter()
             .filter(|task| {
                 let name_match = task.name.to_lowercase().contains(&app_name_lower);
                 let action_match = task.actions.iter().any(|action| {
-                    action.execute.as_ref()
+                    action
+                        .execute
+                        .as_ref()
                         .map(|e| e.to_lowercase().contains(&app_name_lower))
                         .unwrap_or(false)
                 });
-                let publisher_match = publisher_lower.as_ref()
+                let publisher_match = publisher_lower
+                    .as_ref()
                     .map(|p| task.name.to_lowercase().contains(p))
                     .unwrap_or(false);
-                
+
                 name_match || action_match || publisher_match
             })
             .collect();
 
-        info!("Found {} tasks for app '{}'", matching_tasks.len(), app.name);
+        info!(
+            "Found {} tasks for app '{}'",
+            matching_tasks.len(),
+            app.name
+        );
         Ok(matching_tasks)
     }
 
     /// Convert scheduled task to leftover artifact
-    pub fn task_to_artifact(&self, task: &ScheduledTask, app_id: Option<uuid::Uuid>) -> LeftoverArtifact {
-        let mut artifact = LeftoverArtifact::new(
-            ArtifactType::ScheduledTask,
-            PathBuf::from(&task.path),
-        );
+    pub fn task_to_artifact(
+        &self,
+        task: &ScheduledTask,
+        app_id: Option<uuid::Uuid>,
+    ) -> LeftoverArtifact {
+        let mut artifact =
+            LeftoverArtifact::new(ArtifactType::ScheduledTask, PathBuf::from(&task.path));
         artifact.app_id = app_id;
         artifact.description = format!("Scheduled task: {}", task.name);
         artifact.safety_level = SafetyLevel::Caution;
@@ -235,13 +275,18 @@ impl TaskSchedulerScanner {
                 Ok(())
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                Err(GreekError::SystemError(format!("Failed to delete task: {}", stderr)))
+                Err(GreekError::SystemError(format!(
+                    "Failed to delete task: {}",
+                    stderr
+                )))
             }
         }
 
         #[cfg(not(target_os = "windows"))]
         {
-            Err(GreekError::SystemError("Task Scheduler not available on this platform".to_string()))
+            Err(GreekError::SystemError(
+                "Task Scheduler not available on this platform".to_string(),
+            ))
         }
     }
 }
@@ -259,7 +304,8 @@ mod tests {
     #[tokio::test]
     async fn test_task_scanner_creation() {
         let scanner = TaskSchedulerScanner::new();
-        assert!(true);
+        // Environment-dependent, so only verify the scanner is usable.
+        let _ = scanner.scan_tasks().await;
     }
 
     #[tokio::test]

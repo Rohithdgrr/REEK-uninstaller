@@ -1,7 +1,10 @@
-# Rust
+# Rust build artifacts
 /target/
 **/*.rs.bk
-Cargo.lock
+
+# NOTE: Cargo.lock is intentionally NOT ignored. REEK ships binaries, so the
+# lockfile must be committed to guarantee reproducible builds and to pin the
+# exact dependency versions used by CI and releases (supply-chain integrity).
 
 # Tooling
 rustup-init.exe
@@ -19,6 +22,9 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Security audit output (cargo audit output-path)
+audit-report.txt
 
 # Test coverage
 tarpaulin-report.html

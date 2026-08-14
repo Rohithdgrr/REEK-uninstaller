@@ -9,7 +9,6 @@ fn test_installed_app_serialization() {
         InstallSource::Registry {
             hive: RegistryHive::Hklm,
             key_path: "test".to_string(),
-            is_64_bit: true,
         },
     );
 
@@ -28,7 +27,10 @@ fn test_greek_config_serialization() {
     let deserialized: GreekConfig = serde_json::from_str(&serialized).unwrap();
 
     assert_eq!(config.ui.theme, deserialized.ui.theme);
-    assert_eq!(config.scanner.scan_browser_extensions, deserialized.scanner.scan_browser_extensions);
+    assert_eq!(
+        config.scanner.scan_browser_extensions,
+        deserialized.scanner.scan_browser_extensions
+    );
 }
 
 #[test]
@@ -57,7 +59,6 @@ fn test_batch_queue_operations() {
         InstallSource::Registry {
             hive: RegistryHive::Hklm,
             key_path: "test1".to_string(),
-            is_64_bit: true,
         },
     );
 
@@ -66,7 +67,6 @@ fn test_batch_queue_operations() {
         InstallSource::Registry {
             hive: RegistryHive::Hklm,
             key_path: "test2".to_string(),
-            is_64_bit: true,
         },
     );
 
@@ -87,10 +87,8 @@ fn test_safety_level_ordering() {
 
 #[test]
 fn test_leftover_artifact_safety_check() {
-    let mut artifact = LeftoverArtifact::new(
-        ArtifactType::Directory,
-        std::path::PathBuf::from("/test"),
-    );
+    let mut artifact =
+        LeftoverArtifact::new(ArtifactType::Directory, std::path::PathBuf::from("/test"));
 
     artifact.safety_level = SafetyLevel::Safe;
     assert!(artifact.is_safe_to_delete());

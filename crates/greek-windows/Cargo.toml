@@ -2,41 +2,19 @@
 name = "greek-windows"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
-greek-common = { path = "../greek-common" }
+greek-common = { path = "../greek-common", version = "0.1.0" }
 
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-# Official Windows API bindings
-windows = { version = "0.58.0", features = [
-    "Win32_Foundation",
-    "Win32_System_Registry",
-    "Win32_System_Services",
-    "Win32_System_ProcessStatus",
-] }
-
-# Registry
-winreg = "0.52.0"
-
-# WMI
-wmi = "0.14.0"
-
-# System info (CPU / memory / disks / processes)
+# System info (CPU / memory / disks / processes) — cross-platform
 sysinfo = "0.31.0"
 
-# PowerShell interop
-powershell_script = "1.0.4"
-
-# Privilege escalation
-runas = "1.2.0"
-
-# Image processing (icon dominant color extraction)
-image = { version = "0.25", default-features = false, features = ["png"] }
-
-# Base64 (compact icon pixel data in metadata)
+# Base64 (decode icon pixel data from app metadata)
 base64 = "0.22"
 
 # Async
@@ -54,4 +32,28 @@ color-eyre = { workspace = true }
 tracing = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
+# Official Windows API bindings
+windows = { version = "0.58.0", features = [
+    "Win32_Foundation",
+    "Win32_System_Registry",
+    "Win32_System_Services",
+    "Win32_System_ProcessStatus",
+] }
+
+# Registry
+winreg = "0.52.0"
+
+# WMI
+wmi = "0.14.0"
+
+# PowerShell interop
+powershell_script = "1.0.4"
+
+# Privilege escalation
+runas = "1.2.0"
+
+# Image processing (icon dominant color extraction)
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Native NT API
 ntapi = "0.4.1"

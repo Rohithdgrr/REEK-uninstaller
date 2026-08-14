@@ -1,9 +1,11 @@
 // Windows Store/UWP app scanner implementation
 
-use greek_common::{AppScanner, InstalledApp, InstallSource, Result, GreekError, clean_publisher_name};
 use async_trait::async_trait;
-use tracing::{info, warn};
+use greek_common::{
+    clean_publisher_name, AppScanner, GreekError, InstallSource, InstalledApp, Result,
+};
 use std::path::PathBuf;
+use tracing::{info, warn};
 
 /// Windows Store/UWP app scanner
 pub struct WindowsStoreScanner {
@@ -26,7 +28,7 @@ impl WindowsStoreScanner {
     /// Scan for Windows Store/UWP apps using PowerShell
     pub async fn scan_store_apps(&self) -> Result<Vec<InstalledApp>> {
         info!("Scanning for Windows Store/UWP apps");
-        
+
         let mut apps = Vec::new();
 
         // Use PowerShell to get Appx packages (compact query for speed)
@@ -36,7 +38,7 @@ impl WindowsStoreScanner {
             ConvertTo-Json -Depth 3
         "#;
 
-        let output = self.run_powershell(&ps_command).await?;
+        let output = self.run_powershell(ps_command).await?;
 
         if output.is_empty() {
             warn!("No output from PowerShell command");
@@ -44,8 +46,9 @@ impl WindowsStoreScanner {
         }
 
         // Parse JSON output
-        let packages: Vec<serde_json::Value> = serde_json::from_str(&output)
-            .map_err(|e| GreekError::SystemError(format!("Failed to parse PowerShell output: {}", e)))?;
+        let packages: Vec<serde_json::Value> = serde_json::from_str(&output).map_err(|e| {
+            GreekError::SystemError(format!("Failed to parse PowerShell output: {}", e))
+        })?;
 
         for package in packages {
             if let Some(app) = self.parse_appx_package(&package) {
@@ -66,14 +69,17 @@ impl WindowsStoreScanner {
         let package_full_name = package.get("PackageFullName")?.as_str()?.to_string();
         let package_family_name = package.get("PackageFamilyName")?.as_str()?.to_string();
         let install_location = package.get("InstallLocation")?.as_str()?;
-        let version = package.get("Version").and_then(|v| v.as_str()).map(String::from);
+        let version = package
+            .get("Version")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         let publisher = package
             .get("Publisher")
             .and_then(|p| p.as_str())
-            .map(|p| clean_publisher_name(p));
+            .map(clean_publisher_name);
 
-        let is_framework = name.starts_with("Microsoft.") && 
-            (name.contains("UI") || name.contains("Framework"));
+        let is_framework =
+            name.starts_with("Microsoft.") && (name.contains("UI") || name.contains("Framework"));
 
         let mut app = InstalledApp::new(
             name,
@@ -105,7 +111,10 @@ impl WindowsStoreScanner {
         for logo in logo_candidates {
             let candidate = loc.join(logo);
             if candidate.exists() {
-                app.metadata.insert("display_icon".into(), candidate.to_string_lossy().into_owned());
+                app.metadata.insert(
+                    "display_icon".into(),
+                    candidate.to_string_lossy().into_owned(),
+                );
                 break;
             }
         }
@@ -144,15 +153,10 @@ impl WindowsStoreScanner {
     /// Run a PowerShell command and return output
     async fn run_powershell(&self, command: &str) -> Result<String> {
         let command = command.to_string();
-        
+
         let output = tokio::task::spawn_blocking(move || {
             std::process::Command::new("powershell.exe")
-                .args([
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    &command,
-                ])
+                .args(["-NoProfile", "-NonInteractive", "-Command", &command])
                 .output()
         })
         .await
@@ -161,14 +165,20 @@ impl WindowsStoreScanner {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(GreekError::SystemError(format!("PowerShell command failed: {}", stderr)));
+            return Err(GreekError::SystemError(format!(
+                "PowerShell command failed: {}",
+                stderr
+            )));
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
     /// Get package details including dependencies
-    pub async fn get_package_details(&self, package_family_name: &str) -> Result<serde_json::Value> {
+    pub async fn get_package_details(
+        &self,
+        package_family_name: &str,
+    ) -> Result<serde_json::Value> {
         let ps_command = format!(
             r#"
             Get-AppxPackage -PackageFamilyFilter '{}' | 
@@ -179,7 +189,7 @@ impl WindowsStoreScanner {
         );
 
         let output = self.run_powershell(&ps_command).await?;
-        
+
         serde_json::from_str(&output)
             .map_err(|e| GreekError::SystemError(format!("Failed to parse package details: {}", e)))
     }
@@ -202,14 +212,23 @@ impl WindowsStoreScanner {
         );
 
         let output = self.run_powershell(&ps_command).await?;
-        
+
         if output.contains("Successfully removed") {
-            info!("Successfully removed Windows Store app: {}", package_family_name);
+            info!(
+                "Successfully removed Windows Store app: {}",
+                package_family_name
+            );
             Ok(())
         } else if output.contains("Package not found") {
-            Err(GreekError::NotFound(format!("Package '{}' not found", package_family_name)))
+            Err(GreekError::NotFound(format!(
+                "Package '{}' not found",
+                package_family_name
+            )))
         } else {
-            Err(GreekError::SystemError(format!("Failed to remove package: {}", output)))
+            Err(GreekError::SystemError(format!(
+                "Failed to remove package: {}",
+                output
+            )))
         }
     }
 
@@ -231,14 +250,23 @@ impl WindowsStoreScanner {
         );
 
         let output = self.run_powershell(&ps_command).await?;
-        
+
         if output.contains("Successfully reset") {
-            info!("Successfully reset Windows Store app: {}", package_family_name);
+            info!(
+                "Successfully reset Windows Store app: {}",
+                package_family_name
+            );
             Ok(())
         } else if output.contains("Package not found") {
-            Err(GreekError::NotFound(format!("Package '{}' not found", package_family_name)))
+            Err(GreekError::NotFound(format!(
+                "Package '{}' not found",
+                package_family_name
+            )))
         } else {
-            Err(GreekError::SystemError(format!("Failed to reset package: {}", output)))
+            Err(GreekError::SystemError(format!(
+                "Failed to reset package: {}",
+                output
+            )))
         }
     }
 
@@ -248,10 +276,16 @@ impl WindowsStoreScanner {
         let entries = fs::read_dir(dir).ok()?;
         let mut exes: Vec<_> = entries
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().is_some_and(|ext| ext.eq_ignore_ascii_case("exe")))
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+            })
             .collect();
-        exes.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
-        exes.into_iter().next().map(|e| e.path().to_string_lossy().into_owned())
+        exes.sort_by_key(|a| a.file_name());
+        exes.into_iter()
+            .next()
+            .map(|e| e.path().to_string_lossy().into_owned())
     }
 }
 

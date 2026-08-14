@@ -1,6 +1,6 @@
 // Common platform-agnostic utilities
 
-use greek_common::{Result, GreekError};
+use greek_common::{GreekError, Result};
 use std::path::PathBuf;
 
 /// Get the current operating system
@@ -20,7 +20,7 @@ pub fn is_elevated() -> bool {
         // Windows-specific elevation check
         false // Placeholder
     }
-    
+
     #[cfg(unix)]
     {
         // Unix/Linux/macOS: check if running as root
@@ -31,7 +31,7 @@ pub fn is_elevated() -> bool {
 /// Get common application directories for the current platform
 pub fn get_common_app_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    
+
     #[cfg(target_os = "windows")]
     {
         if let Ok(program_files) = std::env::var("ProgramFiles") {
@@ -50,7 +50,7 @@ pub fn get_common_app_dirs() -> Vec<PathBuf> {
             dirs.push(PathBuf::from(app_data));
         }
     }
-    
+
     #[cfg(target_os = "linux")]
     {
         dirs.push(PathBuf::from("/usr/share/applications"));
@@ -59,7 +59,7 @@ pub fn get_common_app_dirs() -> Vec<PathBuf> {
             dirs.push(PathBuf::from(home).join(".local/share/applications"));
         }
     }
-    
+
     #[cfg(target_os = "macos")]
     {
         dirs.push(PathBuf::from("/Applications"));
@@ -67,7 +67,7 @@ pub fn get_common_app_dirs() -> Vec<PathBuf> {
             dirs.push(PathBuf::from(home).join("Applications"));
         }
     }
-    
+
     dirs
 }
 
@@ -84,15 +84,17 @@ pub fn get_home_dir() -> Result<PathBuf> {
             }
         }
     }
-    
+
     #[cfg(unix)]
     {
         if let Ok(home) = std::env::var("HOME") {
             return Ok(PathBuf::from(home));
         }
     }
-    
-    Err(GreekError::SystemError("Could not determine home directory".to_string()))
+
+    Err(GreekError::SystemError(
+        "Could not determine home directory".to_string(),
+    ))
 }
 
 #[cfg(test)]

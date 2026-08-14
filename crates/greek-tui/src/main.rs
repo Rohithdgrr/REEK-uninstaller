@@ -1,29 +1,29 @@
 // Main entry point for the TUI application
 
-use greek_tui::TuiApp;
-use greek_core::{GreekAppService, ConfigManager};
-use ratatui::{
-    backend::CrosstermBackend,
-    layout::{Alignment, Constraint, Direction, Layout},
-    style::{Color, Style, Modifier},
-    text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
-    Terminal,
-};
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use greek_core::{ConfigManager, GreekAppService};
+use greek_tui::TuiApp;
+use ratatui::{
+    backend::CrosstermBackend,
+    layout::{Alignment, Constraint, Direction, Layout},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph},
+    Terminal,
+};
 use std::io;
 
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
-    
+
     let config_manager = ConfigManager::new()?;
     let config = config_manager.load_config()?;
     let service = GreekAppService::new(config.clone())?;
-    
+
     // Setup terminal with mouse support
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -31,7 +31,7 @@ fn main() -> color_eyre::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
-    
+
     // Show scanning splash
     terminal.draw(|f| {
         let area = f.area();
@@ -39,49 +39,58 @@ fn main() -> color_eyre::Result<()> {
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(0)])
             .split(area);
-        
+
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Rgb(180, 195, 220)))
             .style(Style::default().bg(Color::Rgb(230, 240, 252)));
-        
+
         let inner = block.inner(chunks[0]);
         f.render_widget(block, chunks[0]);
-        
+
         let lines = vec![
             Line::from(""),
             Line::from(vec![
-                Span::styled("  REEK ", Style::default().fg(Color::Rgb(30, 64, 175)).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "  REEK ",
+                    Style::default()
+                        .fg(Color::Rgb(30, 64, 175))
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled("Uninstaller", Style::default().fg(Color::Rgb(55, 100, 200))),
             ]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("  Scanning installed applications...", Style::default().fg(Color::Rgb(100, 116, 139))),
-            ]),
+            Line::from(vec![Span::styled(
+                "  Scanning installed applications...",
+                Style::default().fg(Color::Rgb(100, 116, 139)),
+            )]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("  Reading Windows Registry...", Style::default().fg(Color::Rgb(148, 163, 184))),
-            ]),
+            Line::from(vec![Span::styled(
+                "  Reading Windows Registry...",
+                Style::default().fg(Color::Rgb(148, 163, 184)),
+            )]),
         ];
-        
+
         f.render_widget(Paragraph::new(lines).alignment(Alignment::Left), inner);
     })?;
-    
+
     // Do initial scan
     let rt = tokio::runtime::Runtime::new()?;
-    let scan_result = rt.block_on(async {
-        service.scan_all_apps().await
-    });
-    
+    let scan_result = rt.block_on(async { service.scan_all_apps().await });
+
     let mut app = TuiApp::new(config, service);
-    
+
     match scan_result {
-        Ok(apps) => { app.set_apps(apps); }
-        Err(e) => { app.set_scan_error(format!("Scan failed: {}", e)); }
+        Ok(apps) => {
+            app.set_apps(apps);
+        }
+        Err(e) => {
+            app.set_scan_error(format!("Scan failed: {}", e));
+        }
     }
-    
+
     let result = app.run(&mut terminal);
-    
+
     // Restore terminal
     disable_raw_mode()?;
     execute!(
@@ -90,7 +99,7 @@ fn main() -> color_eyre::Result<()> {
         DisableMouseCapture
     )?;
     terminal.show_cursor()?;
-    
+
     result.map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
     Ok(())
 }

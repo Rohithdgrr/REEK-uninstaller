@@ -1,8 +1,8 @@
 // Linux-specific implementations for package management
 
-use greek_common::{InstalledApp, InstallSource, Result, GreekError, PackageManager};
-use tracing::info;
+use greek_common::{GreekError, InstallSource, InstalledApp, PackageManager, Result};
 use std::process::Command;
+use tracing::info;
 
 /// Linux package manager scanner
 pub struct LinuxPackageScanner {
@@ -49,8 +49,11 @@ impl LinuxPackageScanner {
 
     /// Scan for installed packages
     pub async fn scan(&self) -> Result<Vec<InstalledApp>> {
-        info!("Starting Linux package scan with {:?}", self.package_manager);
-        
+        info!(
+            "Starting Linux package scan with {:?}",
+            self.package_manager
+        );
+
         let apps = match self.package_manager {
             LinuxPackageManager::Apt => self.scan_apt().await?,
             LinuxPackageManager::Dpkg => self.scan_dpkg().await?,
@@ -60,14 +63,22 @@ impl LinuxPackageScanner {
             LinuxPackageManager::Snap => self.scan_snap().await?,
         };
 
-        info!("Found {} packages via {:?}", apps.len(), self.package_manager);
+        info!(
+            "Found {} packages via {:?}",
+            apps.len(),
+            self.package_manager
+        );
         Ok(apps)
     }
 
     /// Scan using apt/dpkg (Debian/Ubuntu)
     async fn scan_apt(&self) -> Result<Vec<InstalledApp>> {
         let output = Command::new("dpkg-query")
-            .args(["-W", "-f", "${Package}\t${Version}\t${Status}\t${Description}\n"])
+            .args([
+                "-W",
+                "-f",
+                "${Package}\t${Version}\t${Status}\t${Description}\n",
+            ])
             .output()
             .map_err(|e| GreekError::ScanError(format!("Failed to execute dpkg-query: {}", e)))?;
 
@@ -119,7 +130,8 @@ impl LinuxPackageScanner {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut apps = Vec::new();
 
-        for line in stdout.lines().skip(5) { // Skip header
+        for line in stdout.lines().skip(5) {
+            // Skip header
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 3 && parts[0] == "ii" {
                 let name = parts[1].to_string();
@@ -143,7 +155,11 @@ impl LinuxPackageScanner {
     /// Scan using rpm (Fedora/RHEL/CentOS)
     async fn scan_rpm(&self) -> Result<Vec<InstalledApp>> {
         let output = Command::new("rpm")
-            .args(["-qa", "--queryformat", "%{NAME}\t%{VERSION}-%{RELEASE}\t%{VENDOR}\t%{SUMMARY}\n"])
+            .args([
+                "-qa",
+                "--queryformat",
+                "%{NAME}\t%{VERSION}-%{RELEASE}\t%{VENDOR}\t%{SUMMARY}\n",
+            ])
             .output()
             .map_err(|e| GreekError::ScanError(format!("Failed to execute rpm: {}", e)))?;
 
@@ -171,7 +187,8 @@ impl LinuxPackageScanner {
                 );
                 app.version = Some(version);
                 app.publisher = Some(vendor.to_string());
-                app.metadata.insert("description".to_string(), summary.to_string());
+                app.metadata
+                    .insert("description".to_string(), summary.to_string());
                 apps.push(app);
             }
         }
@@ -217,7 +234,11 @@ impl LinuxPackageScanner {
     /// Scan using Flatpak
     async fn scan_flatpak(&self) -> Result<Vec<InstalledApp>> {
         let output = Command::new("flatpak")
-            .args(["list", "--app", "--columns=application,version,origin,description"])
+            .args([
+                "list",
+                "--app",
+                "--columns=application,version,origin,description",
+            ])
             .output()
             .map_err(|e| GreekError::ScanError(format!("Failed to execute flatpak: {}", e)))?;
 
@@ -245,7 +266,8 @@ impl LinuxPackageScanner {
                 );
                 app.version = Some(version);
                 app.publisher = Some(origin.to_string());
-                app.metadata.insert("description".to_string(), description.to_string());
+                app.metadata
+                    .insert("description".to_string(), description.to_string());
                 apps.push(app);
             }
         }
@@ -267,7 +289,8 @@ impl LinuxPackageScanner {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut apps = Vec::new();
 
-        for line in stdout.lines().skip(1) { // Skip header
+        for line in stdout.lines().skip(1) {
+            // Skip header
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 4 {
                 let name = parts[0].to_string();
@@ -284,7 +307,8 @@ impl LinuxPackageScanner {
                 );
                 app.version = Some(version);
                 app.metadata.insert("revision".to_string(), rev.to_string());
-                app.metadata.insert("tracking".to_string(), tracking.to_string());
+                app.metadata
+                    .insert("tracking".to_string(), tracking.to_string());
                 apps.push(app);
             }
         }
@@ -294,34 +318,27 @@ impl LinuxPackageScanner {
 
     /// Remove a package
     pub async fn remove_package(&self, package_name: &str) -> Result<()> {
-        info!("Removing package: {} via {:?}", package_name, self.package_manager);
+        info!(
+            "Removing package: {} via {:?}",
+            package_name, self.package_manager
+        );
 
         let result = match self.package_manager {
-            LinuxPackageManager::Apt | LinuxPackageManager::Dpkg => {
-                Command::new("sudo")
-                    .args(["apt", "remove", "-y", package_name])
-                    .output()
-            }
-            LinuxPackageManager::Rpm => {
-                Command::new("sudo")
-                    .args(["dnf", "remove", "-y", package_name])
-                    .output()
-            }
-            LinuxPackageManager::Pacman => {
-                Command::new("sudo")
-                    .args(["pacman", "-R", "--noconfirm", package_name])
-                    .output()
-            }
-            LinuxPackageManager::Flatpak => {
-                Command::new("flatpak")
-                    .args(["uninstall", "-y", package_name])
-                    .output()
-            }
-            LinuxPackageManager::Snap => {
-                Command::new("sudo")
-                    .args(["snap", "remove", package_name])
-                    .output()
-            }
+            LinuxPackageManager::Apt | LinuxPackageManager::Dpkg => Command::new("sudo")
+                .args(["apt", "remove", "-y", package_name])
+                .output(),
+            LinuxPackageManager::Rpm => Command::new("sudo")
+                .args(["dnf", "remove", "-y", package_name])
+                .output(),
+            LinuxPackageManager::Pacman => Command::new("sudo")
+                .args(["pacman", "-R", "--noconfirm", package_name])
+                .output(),
+            LinuxPackageManager::Flatpak => Command::new("flatpak")
+                .args(["uninstall", "-y", package_name])
+                .output(),
+            LinuxPackageManager::Snap => Command::new("sudo")
+                .args(["snap", "remove", package_name])
+                .output(),
         };
 
         match result {
@@ -331,44 +348,53 @@ impl LinuxPackageScanner {
                     Ok(())
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    Err(GreekError::UninstallError(format!("Failed to remove package: {}", stderr)))
+                    Err(GreekError::UninstallError(format!(
+                        "Failed to remove package: {}",
+                        stderr
+                    )))
                 }
             }
-            Err(e) => Err(GreekError::UninstallError(format!("Failed to execute remove command: {}", e))),
+            Err(e) => Err(GreekError::UninstallError(format!(
+                "Failed to execute remove command: {}",
+                e
+            ))),
         }
     }
 
     /// Get package information
     pub async fn get_package_info(&self, package_name: &str) -> Result<PackageInfo> {
         let output = match self.package_manager {
-            LinuxPackageManager::Apt | LinuxPackageManager::Dpkg => {
-                Command::new("dpkg-query")
-                    .args(["-W", "-f", "${Package}\n${Version}\n${Status}\n${Description}\n", package_name])
-                    .output()
-            }
-            LinuxPackageManager::Rpm => {
-                Command::new("rpm")
-                    .args(["-qi", package_name])
-                    .output()
-            }
+            LinuxPackageManager::Apt | LinuxPackageManager::Dpkg => Command::new("dpkg-query")
+                .args([
+                    "-W",
+                    "-f",
+                    "${Package}\n${Version}\n${Status}\n${Description}\n",
+                    package_name,
+                ])
+                .output(),
+            LinuxPackageManager::Rpm => Command::new("rpm").args(["-qi", package_name]).output(),
             LinuxPackageManager::Pacman => {
-                Command::new("pacman")
-                    .args(["-Qi", package_name])
-                    .output()
+                Command::new("pacman").args(["-Qi", package_name]).output()
             }
             _ => {
-                return Err(GreekError::SystemError("Package info not supported for this manager".to_string()));
+                return Err(GreekError::SystemError(
+                    "Package info not supported for this manager".to_string(),
+                ));
             }
         };
 
-        let output = output.map_err(|e| GreekError::SystemError(format!("Failed to get package info: {}", e)))?;
+        let output = output
+            .map_err(|e| GreekError::SystemError(format!("Failed to get package info: {}", e)))?;
 
         if !output.status.success() {
-            return Err(GreekError::NotFound(format!("Package '{}' not found", package_name)));
+            return Err(GreekError::NotFound(format!(
+                "Package '{}' not found",
+                package_name
+            )));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        
+
         // Parse output based on package manager
         Ok(PackageInfo {
             name: package_name.to_string(),

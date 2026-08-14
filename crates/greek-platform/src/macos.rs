@@ -1,9 +1,9 @@
 // macOS-specific implementations for application management
 
-use greek_common::{InstalledApp, InstallSource, Result, GreekError};
-use tracing::{info, warn};
-use std::path::PathBuf;
+use greek_common::{GreekError, InstallSource, InstalledApp, Result};
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use tracing::{info, warn};
 
 /// macOS .app bundle scanner
 pub struct MacOsAppScanner {
@@ -15,14 +15,14 @@ pub struct MacOsAppScanner {
 impl MacOsAppScanner {
     pub fn new() -> Self {
         let mut scan_dirs = Vec::new();
-        
+
         // Common macOS application directories
         scan_dirs.push(PathBuf::from("/Applications"));
-        
+
         if let Ok(home) = std::env::var("HOME") {
             scan_dirs.push(PathBuf::from(&home).join("Applications"));
         }
-        
+
         Self {
             scan_directories: scan_dirs,
             include_user_apps: true,
@@ -51,45 +51,46 @@ impl MacOsAppScanner {
     /// Scan for installed applications
     pub async fn scan(&self) -> Result<Vec<InstalledApp>> {
         info!("Starting macOS application scan");
-        
+
         let mut apps = Vec::new();
-        
+
         for directory in &self.scan_directories {
             if !directory.exists() {
                 warn!("Scan directory does not exist: {:?}", directory);
                 continue;
             }
-            
+
             let discovered = self.scan_directory(directory).await?;
             apps.extend(discovered);
         }
-        
+
         // Also scan using system_profiler for more accurate data
         if let Ok(system_apps) = self.scan_system_profiler().await {
             apps.extend(system_apps);
         }
-        
+
         // Scan LaunchAgents and LaunchDaemons
         if let Ok(_launch_items) = self.scan_launch_items().await {
             // These are typically not apps but related services
         }
-        
+
         info!("macOS scan completed, found {} applications", apps.len());
-        
+
         Ok(apps)
     }
 
     /// Scan a directory for .app bundles
     async fn scan_directory(&self, directory: &PathBuf) -> Result<Vec<InstalledApp>> {
         let mut apps = Vec::new();
-        
+
         let entries = std::fs::read_dir(directory)
             .map_err(|e| GreekError::ScanError(format!("Failed to read directory: {}", e)))?;
-        
+
         for entry in entries {
-            let entry = entry.map_err(|e| GreekError::ScanError(format!("Failed to read entry: {}", e)))?;
+            let entry =
+                entry.map_err(|e| GreekError::ScanError(format!("Failed to read entry: {}", e)))?;
             let path = entry.path();
-            
+
             // Check if this is an .app bundle
             if path.is_dir() {
                 if let Some(ext) = path.extension() {
@@ -101,27 +102,28 @@ impl MacOsAppScanner {
                 }
             }
         }
-        
+
         Ok(apps)
     }
 
     /// Parse an .app bundle and extract information
-    async fn parse_app_bundle(&self, path: &PathBuf) -> Result<Option<InstalledApp>> {
-        let app_name = path.file_stem()
+    async fn parse_app_bundle(&self, path: &Path) -> Result<Option<InstalledApp>> {
+        let app_name = path
+            .file_stem()
             .and_then(|n| n.to_str())
             .unwrap_or("Unknown")
             .to_string();
-        
+
         let mut app = InstalledApp::new(
             app_name.clone(),
             InstallSource::Portable {
-                detected_path: path.clone(),
+                detected_path: path.to_path_buf(),
                 confidence: 0.95,
             },
         );
-        
-        app.install_location = Some(path.clone());
-        
+
+        app.install_location = Some(path.to_path_buf());
+
         // Read Info.plist for detailed information
         let info_plist = path.join("Contents").join("Info.plist");
         if info_plist.exists() {
@@ -130,20 +132,26 @@ impl MacOsAppScanner {
                     app.name = plist_info.name.unwrap_or(app_name);
                     app.version = plist_info.version;
                     app.publisher = plist_info.developer;
-                    app.metadata.insert("bundle_id".to_string(), plist_info.bundle_id.unwrap_or_default());
-                    app.metadata.insert("min_system_version".to_string(), plist_info.min_os_version.unwrap_or_default());
+                    app.metadata.insert(
+                        "bundle_id".to_string(),
+                        plist_info.bundle_id.unwrap_or_default(),
+                    );
+                    app.metadata.insert(
+                        "min_system_version".to_string(),
+                        plist_info.min_os_version.unwrap_or_default(),
+                    );
                 }
                 Err(e) => {
                     warn!("Failed to parse Info.plist for {}: {}", app_name, e);
                 }
             }
         }
-        
+
         // Get app size
         if let Ok(size) = self.get_app_size(path) {
             app.size_bytes = Some(size);
         }
-        
+
         Ok(Some(app))
     }
 
@@ -165,11 +173,26 @@ impl MacOsAppScanner {
             .map_err(|e| GreekError::SystemError(format!("Failed to parse plist JSON: {}", e)))?;
 
         Ok(PlistInfo {
-            name: plist.get("CFBundleName").and_then(|v| v.as_str()).map(String::from),
-            version: plist.get("CFBundleShortVersionString").and_then(|v| v.as_str()).map(String::from),
-            bundle_id: plist.get("CFBundleIdentifier").and_then(|v| v.as_str()).map(String::from),
-            developer: plist.get("CFBundleDeveloperName").and_then(|v| v.as_str()).map(String::from),
-            min_os_version: plist.get("LSMinimumSystemVersion").and_then(|v| v.as_str()).map(String::from),
+            name: plist
+                .get("CFBundleName")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            version: plist
+                .get("CFBundleShortVersionString")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            bundle_id: plist
+                .get("CFBundleIdentifier")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            developer: plist
+                .get("CFBundleDeveloperName")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            min_os_version: plist
+                .get("LSMinimumSystemVersion")
+                .and_then(|v| v.as_str())
+                .map(String::from),
         })
     }
 
@@ -210,7 +233,7 @@ impl MacOsAppScanner {
     }
 
     /// Get the size of an application bundle
-    fn get_app_size(&self, path: &PathBuf) -> Result<u64> {
+    fn get_app_size(&self, path: &Path) -> Result<u64> {
         let output = Command::new("du")
             .args(["-sh", &path.to_string_lossy()])
             .output()
@@ -228,14 +251,14 @@ impl MacOsAppScanner {
     /// Parse size string like "1.2G", "500M", "100K"
     fn parse_size_string(&self, size_str: &str) -> Result<u64> {
         let size_str = size_str.trim().to_lowercase();
-        
-        if let Some(num_str) = size_str.strip_suffix('G') {
+
+        if let Some(num_str) = size_str.strip_suffix('g') {
             let num: f64 = num_str.parse().unwrap_or(0.0);
             Ok((num * 1024.0 * 1024.0 * 1024.0) as u64)
-        } else if let Some(num_str) = size_str.strip_suffix('M') {
+        } else if let Some(num_str) = size_str.strip_suffix('m') {
             let num: f64 = num_str.parse().unwrap_or(0.0);
             Ok((num * 1024.0 * 1024.0) as u64)
-        } else if let Some(num_str) = size_str.strip_suffix('K') {
+        } else if let Some(num_str) = size_str.strip_suffix('k') {
             let num: f64 = num_str.parse().unwrap_or(0.0);
             Ok((num * 1024.0) as u64)
         } else {
@@ -249,15 +272,18 @@ impl MacOsAppScanner {
         let output = Command::new("system_profiler")
             .args(["SPApplicationsDataType", "-json"])
             .output()
-            .map_err(|e| GreekError::SystemError(format!("Failed to execute system_profiler: {}", e)))?;
+            .map_err(|e| {
+                GreekError::SystemError(format!("Failed to execute system_profiler: {}", e))
+            })?;
 
         if !output.status.success() {
             return Ok(Vec::new());
         }
 
         let json_str = String::from_utf8_lossy(&output.stdout);
-        let data: serde_json::Value = serde_json::from_str(&json_str)
-            .map_err(|e| GreekError::SystemError(format!("Failed to parse system_profiler output: {}", e)))?;
+        let data: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+            GreekError::SystemError(format!("Failed to parse system_profiler output: {}", e))
+        })?;
 
         let mut apps = Vec::new();
 
@@ -277,9 +303,18 @@ impl MacOsAppScanner {
     /// Parse an application from system_profiler output
     fn parse_system_profiler_app(&self, data: &serde_json::Value) -> Option<InstalledApp> {
         let name = data.get("_name")?.as_str()?.to_string();
-        let version = data.get("version").and_then(|v| v.as_str()).map(String::from);
-        let developer = data.get("developer").and_then(|v| v.as_str()).map(String::from);
-        let location = data.get("location").and_then(|v| v.as_str()).map(|s| PathBuf::from(s));
+        let version = data
+            .get("version")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let developer = data
+            .get("developer")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let location = data
+            .get("location")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from);
         let size = data.get("size_bytes").and_then(|v| v.as_u64());
 
         let mut app = InstalledApp::new(
@@ -301,7 +336,7 @@ impl MacOsAppScanner {
     /// Scan LaunchAgents and LaunchDaemons
     async fn scan_launch_items(&self) -> Result<Vec<LaunchItem>> {
         let mut items = Vec::new();
-        
+
         let launch_dirs = vec![
             PathBuf::from("/Library/LaunchDaemons"),
             PathBuf::from("/Library/LaunchAgents"),
@@ -326,9 +361,10 @@ impl MacOsAppScanner {
     /// Scan a LaunchAgents/LaunchDaemons directory
     async fn scan_launch_directory(&self, dir: &PathBuf) -> Result<Vec<LaunchItem>> {
         let mut items = Vec::new();
-        
-        let entries = std::fs::read_dir(dir)
-            .map_err(|e| GreekError::ScanError(format!("Failed to read launch directory: {}", e)))?;
+
+        let entries = std::fs::read_dir(dir).map_err(|e| {
+            GreekError::ScanError(format!("Failed to read launch directory: {}", e))
+        })?;
 
         for entry in entries.flatten() {
             let path = entry.path();
@@ -345,7 +381,7 @@ impl MacOsAppScanner {
     /// Parse a launch plist file
     async fn parse_launch_plist(&self, path: &PathBuf) -> Option<LaunchItem> {
         let content = std::fs::read_to_string(path).ok()?;
-        
+
         let label = self.extract_plist_string(&content, "Label")?;
         let program = self.extract_plist_string(&content, "Program");
 
@@ -360,8 +396,11 @@ impl MacOsAppScanner {
     /// Remove an application
     pub async fn remove_app(&self, app: &InstalledApp) -> Result<()> {
         if let Some(install_location) = &app.install_location {
-            info!("Removing application: {:?} at {:?}", app.name, install_location);
-            
+            info!(
+                "Removing application: {:?} at {:?}",
+                app.name, install_location
+            );
+
             // Use rm -rf for the .app bundle
             let output = Command::new("sudo")
                 .args(["rm", "-rf", &install_location.to_string_lossy()])
@@ -373,34 +412,16 @@ impl MacOsAppScanner {
                 Ok(())
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                Err(GreekError::UninstallError(format!("Failed to remove app: {}", stderr)))
+                Err(GreekError::UninstallError(format!(
+                    "Failed to remove app: {}",
+                    stderr
+                )))
             }
         } else {
-            Err(GreekError::SystemError("No install location found for app".to_string()))
+            Err(GreekError::SystemError(
+                "No install location found for app".to_string(),
+            ))
         }
-    }
-
-    /// Get application using mdls (metadata)
-    async fn get_app_metadata(&self, path: &PathBuf) -> Result<std::collections::HashMap<String, String>> {
-        let output = Command::new("mdls")
-            .args(["-plist", "-", &path.to_string_lossy()])
-            .output()
-            .map_err(|e| GreekError::SystemError(format!("Failed to execute mdls: {}", e)))?;
-
-        let mut metadata = std::collections::HashMap::new();
-
-        if output.status.success() {
-            let plist_str = String::from_utf8_lossy(&output.stdout);
-            // Parse plist and extract metadata
-            if let Some(name) = self.extract_plist_string(&plist_str, "kMDItemDisplayName") {
-                metadata.insert("display_name".to_string(), name);
-            }
-            if let Some(version) = self.extract_plist_string(&plist_str, "kMDItemVersion") {
-                metadata.insert("version".to_string(), version);
-            }
-        }
-
-        Ok(metadata)
     }
 }
 
@@ -450,16 +471,22 @@ mod tests {
                 <string>1.0.0</string>
             </dict>
         "#;
-        
-        assert_eq!(scanner.extract_plist_string(content, "CFBundleName"), Some("TestApp".to_string()));
-        assert_eq!(scanner.extract_plist_string(content, "CFBundleVersion"), Some("1.0.0".to_string()));
+
+        assert_eq!(
+            scanner.extract_plist_string(content, "CFBundleName"),
+            Some("TestApp".to_string())
+        );
+        assert_eq!(
+            scanner.extract_plist_string(content, "CFBundleVersion"),
+            Some("1.0.0".to_string())
+        );
         assert_eq!(scanner.extract_plist_string(content, "NonExistent"), None);
     }
 
     #[test]
     fn test_parse_size_string() {
         let scanner = MacOsAppScanner::new();
-        
+
         assert_eq!(scanner.parse_size_string("1.5G").unwrap(), 1610612736);
         assert_eq!(scanner.parse_size_string("500M").unwrap(), 524288000);
         assert_eq!(scanner.parse_size_string("100K").unwrap(), 102400);

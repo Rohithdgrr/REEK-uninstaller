@@ -13,9 +13,6 @@ disallowed-methods = []
 # Disallow certain types
 disallowed-types = []
 
-# Documentation requirements
-missing-docs-in-private-items = false
-
 # Single char binding names threshold
 single-char-binding-names-threshold = 4
 
@@ -24,9 +21,6 @@ literal-representation-threshold = 30
 
 # Maximum function params
 too-many-arguments-threshold = 7
-
-# Maximum struct fields
-type-complexity-threshold = 250
 
 # Allow certain lints
 allow-expect-in-tests = true

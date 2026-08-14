@@ -1,6 +1,6 @@
 // Windows service management implementation
 
-use greek_common::{InstalledApp, Result, GreekError};
+use greek_common::{GreekError, InstalledApp, Result};
 use tracing::{info, warn};
 
 /// Windows service information
@@ -33,10 +33,10 @@ impl WindowsServiceManager {
     /// Find services associated with an application
     pub async fn find_services_for_app(&self, app: &InstalledApp) -> Result<Vec<WindowsService>> {
         info!("Finding services for app: {}", app.name);
-        
+
         let app_name_lower = app.name.to_lowercase();
         let all_services = self.list_all_services().await?;
-        
+
         let matching: Vec<WindowsService> = all_services
             .into_iter()
             .filter(|svc| {
@@ -44,7 +44,7 @@ impl WindowsServiceManager {
                     || svc.display_name.to_lowercase().contains(&app_name_lower)
             })
             .collect();
-        
+
         info!("Found {} services for app '{}'", matching.len(), app.name);
         Ok(matching)
     }
@@ -81,7 +81,7 @@ impl WindowsServiceManager {
                 let name = svc.get("Name")?.as_str()?.to_string();
                 let display_name = svc.get("DisplayName")?.as_str()?.to_string();
                 let status_str = svc.get("Status")?.as_str()?;
-                
+
                 let status = match status_str {
                     "Running" => ServiceStatus::Running,
                     "Stopped" => ServiceStatus::Stopped,
@@ -106,9 +106,9 @@ impl WindowsServiceManager {
     /// Stop a service
     pub async fn stop_service(&self, service_name: &str) -> Result<()> {
         info!("Stopping service: {}", service_name);
-        
+
         use std::process::Command;
-        
+
         let ps_command = format!(
             r#"Stop-Service -Name '{}' -Force -ErrorAction Stop"#,
             service_name.replace('\'', "''")
@@ -124,16 +124,19 @@ impl WindowsServiceManager {
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(GreekError::ServiceError(format!("Failed to stop service: {}", stderr)))
+            Err(GreekError::ServiceError(format!(
+                "Failed to stop service: {}",
+                stderr
+            )))
         }
     }
 
     /// Delete a service
     pub async fn delete_service(&self, service_name: &str) -> Result<()> {
         info!("Deleting service: {}", service_name);
-        
+
         use std::process::Command;
-        
+
         let ps_command = format!(
             r#"Get-Service -Name '{}' | Stop-Service -Force; sc.exe delete '{}'"#,
             service_name.replace('\'', "''"),
@@ -150,7 +153,10 @@ impl WindowsServiceManager {
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(GreekError::ServiceError(format!("Failed to delete service: {}", stderr)))
+            Err(GreekError::ServiceError(format!(
+                "Failed to delete service: {}",
+                stderr
+            )))
         }
     }
 
@@ -192,6 +198,7 @@ mod tests {
     #[tokio::test]
     async fn test_service_manager_creation() {
         let manager = WindowsServiceManager::new();
-        assert!(true);
+        // Environment-dependent, so only verify the manager is usable.
+        let _ = manager.list_all_services().await;
     }
 }

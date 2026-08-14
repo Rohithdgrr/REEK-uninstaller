@@ -25,11 +25,9 @@ pub fn clean_publisher_name(raw: &str) -> String {
             best = Some(rest.trim().to_string());
             break;
         }
-        if i == 0 || part.starts_with("O=") {
-            if o_start.is_none() {
-                if let Some(rest) = part.strip_prefix("O=") {
-                    o_start = Some(rest.trim().to_string());
-                }
+        if (i == 0 || part.starts_with("O=")) && o_start.is_none() {
+            if let Some(rest) = part.strip_prefix("O=") {
+                o_start = Some(rest.trim().to_string());
             }
         }
     }
@@ -386,15 +384,24 @@ impl BatchQueue {
     }
 
     pub fn pending_count(&self) -> usize {
-        self.items.iter().filter(|i| i.status == BatchStatus::Queued).count()
+        self.items
+            .iter()
+            .filter(|i| i.status == BatchStatus::Queued)
+            .count()
     }
 
     pub fn completed_count(&self) -> usize {
-        self.items.iter().filter(|i| i.status == BatchStatus::Completed).count()
+        self.items
+            .iter()
+            .filter(|i| i.status == BatchStatus::Completed)
+            .count()
     }
 
     pub fn failed_count(&self) -> usize {
-        self.items.iter().filter(|i| i.status == BatchStatus::Failed).count()
+        self.items
+            .iter()
+            .filter(|i| i.status == BatchStatus::Failed)
+            .count()
     }
 }
 
@@ -415,7 +422,7 @@ pub enum BatchStatus {
 }
 
 /// Application configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GreekConfig {
     pub ui: UiConfig,
     pub scanner: ScannerConfig,
@@ -423,19 +430,6 @@ pub struct GreekConfig {
     pub leftover: LeftoverConfig,
     pub backup: BackupConfig,
     pub safety: SafetyConfig,
-}
-
-impl Default for GreekConfig {
-    fn default() -> Self {
-        Self {
-            ui: UiConfig::default(),
-            scanner: ScannerConfig::default(),
-            uninstall: UninstallConfig::default(),
-            leftover: LeftoverConfig::default(),
-            backup: BackupConfig::default(),
-            safety: SafetyConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -600,14 +594,112 @@ impl Default for Theme {
 /// Events emitted during operations
 #[derive(Debug, Clone)]
 pub enum AppEvent {
-    ScanStarted { scanner_id: String },
-    ScanProgress { scanner_id: String, current: usize, total: usize },
-    ScanCompleted { scanner_id: String, count: usize },
-    UninstallStarted { app_id: Uuid, app_name: String },
-    UninstallProgress { app_id: Uuid, message: String },
-    UninstallCompleted { app_id: Uuid, result: UninstallResult },
-    LeftoverScanStarted { app_id: Uuid },
-    LeftoverFound { app_id: Uuid, artifact: LeftoverArtifact },
-    BatchProgress { completed: usize, total: usize, current_app: String },
-    Error { operation: String, error: String },
+    ScanStarted {
+        scanner_id: String,
+    },
+    ScanProgress {
+        scanner_id: String,
+        current: usize,
+        total: usize,
+    },
+    ScanCompleted {
+        scanner_id: String,
+        count: usize,
+    },
+    UninstallStarted {
+        app_id: Uuid,
+        app_name: String,
+    },
+    UninstallProgress {
+        app_id: Uuid,
+        message: String,
+    },
+    UninstallCompleted {
+        app_id: Uuid,
+        result: UninstallResult,
+    },
+    LeftoverScanStarted {
+        app_id: Uuid,
+    },
+    LeftoverFound {
+        app_id: Uuid,
+        artifact: LeftoverArtifact,
+    },
+    BatchProgress {
+        completed: usize,
+        total: usize,
+        current_app: String,
+    },
+    Error {
+        operation: String,
+        error: String,
+    },
+}
+
+/// Platform-agnostic system statistics for the TUI status bar.
+/// Concrete collectors live in greek-windows (Windows) and greek-platform (Linux/macOS).
+#[derive(Debug, Clone, Default)]
+pub struct SystemStats {
+    pub cpu_usage: f32,
+    pub ram_used_bytes: u64,
+    pub ram_total_bytes: u64,
+    pub swap_used_bytes: u64,
+    pub swap_total_bytes: u64,
+    pub disks: Vec<DiskStat>,
+    pub gpu: Option<GpuStat>,
+    pub battery: Option<BatteryStat>,
+    pub uptime_secs: u64,
+    pub process_count: usize,
+    /// Per-process resource usage keyed by lowercase exe path (Windows only).
+    pub processes: HashMap<String, ProcessUsage>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ProcessUsage {
+    pub pid: u32,
+    pub name: String,
+    pub exe_path: String,
+    pub cpu_usage: f32,
+    pub memory_bytes: u64,
+    pub virtual_memory: u64,
+    pub run_time_secs: u64,
+    pub started_at: Option<u64>,
+    pub threads: usize,
+    pub read_bytes: u64,
+    pub written_bytes: u64,
+    pub gpu_usage_pct: f32,
+    pub vram_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiskStat {
+    pub label: String,
+    pub used_bytes: u64,
+    pub total_bytes: u64,
+}
+
+impl DiskStat {
+    pub fn usage_pct(&self) -> f32 {
+        if self.total_bytes == 0 {
+            0.0
+        } else {
+            (self.used_bytes as f32 / self.total_bytes as f32) * 100.0
+        }
+    }
+}
+
+/// GPU statistics (Windows only, from performance counters).
+#[derive(Debug, Clone, Default)]
+pub struct GpuStat {
+    pub name: String,
+    pub usage_pct: f32,
+    pub vram_used_bytes: u64,
+    pub vram_total_bytes: u64,
+}
+
+/// Battery statistics (Windows only, from WMI).
+#[derive(Debug, Clone, Default)]
+pub struct BatteryStat {
+    pub percent: u8,
+    pub charging: bool,
 }

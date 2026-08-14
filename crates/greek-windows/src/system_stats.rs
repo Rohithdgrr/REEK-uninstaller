@@ -6,40 +6,28 @@
 // single short PowerShell `Get-Counter` call (the WMI GPU perf classes are
 // missing on many systems).
 
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::time::Duration;
-use serde::Deserialize;
 use wmi::{COMLibrary, WMIConnection};
+
+// Re-export common types so downstream code can use `greek_windows::SystemStats`
+// and get the same type as `greek_common::SystemStats`.
+pub use greek_common::{BatteryStat, DiskStat, GpuStat, ProcessUsage, SystemStats};
 
 /// Field names must match WMI property names exactly.
 #[derive(Debug, Deserialize)]
+#[allow(non_snake_case)]
 struct VideoControllerRow {
     Name: Option<String>,
     AdapterRAM: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(non_snake_case)]
 struct BatteryRow {
     EstimatedChargeRemaining: Option<u64>,
     BatteryStatus: Option<u64>,
-}
-
-/// Live resource usage of a single running process. Keyed by lowercase exe path.
-#[derive(Debug, Clone, Default)]
-pub struct ProcessUsage {
-    pub pid: u32,
-    pub name: String,
-    pub exe_path: String,
-    pub cpu_usage: f32,
-    pub memory_bytes: u64,
-    pub virtual_memory: u64,
-    pub run_time_secs: u64,
-    pub started_at: Option<u64>,
-    pub threads: usize,
-    pub read_bytes: u64,
-    pub written_bytes: u64,
-    pub gpu_usage_pct: f32,
-    pub vram_bytes: u64,
 }
 
 /// Aggregated GPU state plus per-process GPU utilization / VRAM.
@@ -49,53 +37,6 @@ pub struct GpuInfo {
     pub vram_used_bytes: u64,
     pub vram_total_bytes: u64,
     pub per_pid: HashMap<u32, (f32, u64)>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct SystemStats {
-    pub cpu_usage: f32,
-    pub ram_used_bytes: u64,
-    pub ram_total_bytes: u64,
-    pub swap_used_bytes: u64,
-    pub swap_total_bytes: u64,
-    pub disks: Vec<DiskStat>,
-    pub gpu: Option<GpuStat>,
-    pub battery: Option<BatteryStat>,
-    pub uptime_secs: u64,
-    pub process_count: usize,
-    /// Per-process resource usage keyed by lowercase exe path.
-    pub processes: HashMap<String, ProcessUsage>,
-}
-
-#[derive(Debug, Clone)]
-pub struct DiskStat {
-    pub label: String,
-    pub used_bytes: u64,
-    pub total_bytes: u64,
-}
-
-impl DiskStat {
-    pub fn usage_pct(&self) -> f32 {
-        if self.total_bytes == 0 {
-            0.0
-        } else {
-            (self.used_bytes as f32 / self.total_bytes as f32) * 100.0
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct GpuStat {
-    pub name: String,
-    pub usage_pct: f32,
-    pub vram_used_bytes: u64,
-    pub vram_total_bytes: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct BatteryStat {
-    pub percent: u8,
-    pub charging: bool,
 }
 
 /// Collects system stats. Must be created and used on one thread because it
@@ -130,8 +71,7 @@ impl SystemStatsCollector {
         // Give the CPU counters a moment so the delta between the initial
         // refresh and this one is meaningful (avoids a bogus 100% first sample).
         std::thread::sleep(Duration::from_millis(250));
-        self.sys
-            .refresh_cpu_usage();
+        self.sys.refresh_cpu_usage();
         self.sys.refresh_memory();
         self.sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
         self.disks.refresh();
@@ -145,18 +85,24 @@ impl SystemStatsCollector {
             .disks
             .iter()
             .filter(|d| {
-                d.total_space() > 0
-                    && d.file_system().to_str().map_or(false, |s| !s.is_empty())
+                d.total_space() > 0 && d.file_system().to_str().is_some_and(|s| !s.is_empty())
             })
             .map(|d| DiskStat {
-                label: d.mount_point().to_string_lossy().trim_end_matches('\\').to_string(),
+                label: d
+                    .mount_point()
+                    .to_string_lossy()
+                    .trim_end_matches('\\')
+                    .to_string(),
                 used_bytes: d.total_space() - d.available_space(),
                 total_bytes: d.total_space(),
             })
             .collect();
 
         let gpu_info = Self::gpu_info();
-        let gpu_per_pid = gpu_info.as_ref().map(|g| g.per_pid.clone()).unwrap_or_default();
+        let gpu_per_pid = gpu_info
+            .as_ref()
+            .map(|g| g.per_pid.clone())
+            .unwrap_or_default();
         let gpu = gpu_info.map(|g| GpuStat {
             name: self.gpu_name.clone().unwrap_or_default(),
             usage_pct: g.usage_pct,
@@ -169,7 +115,7 @@ impl SystemStatsCollector {
         });
 
         let mut processes = HashMap::new();
-        for (_, p) in self.sys.processes() {
+        for p in self.sys.processes().values() {
             let Some(exe) = p.exe() else { continue };
             let exe_lower = exe.to_string_lossy().to_lowercase();
             let pid = p.pid().as_u32();
@@ -266,7 +212,11 @@ $per.GetEnumerator() | Sort-Object { [int]$_.Key } | ForEach-Object { '{0}|{1}|{
             return None;
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let lines: Vec<&str> = stdout.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+        let lines: Vec<&str> = stdout
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
 
         let mut nums = Vec::with_capacity(3);
         let mut rest = 0usize;
@@ -288,7 +238,8 @@ $per.GetEnumerator() | Sort-Object { [int]$_.Key } | ForEach-Object { '{0}|{1}|{
         let mut per_pid = HashMap::new();
         for l in &lines[rest..] {
             let mut parts = l.split('|');
-            let (Some(pid_s), Some(u_s), Some(v_s)) = (parts.next(), parts.next(), parts.next()) else {
+            let (Some(pid_s), Some(u_s), Some(v_s)) = (parts.next(), parts.next(), parts.next())
+            else {
                 continue;
             };
             let (Ok(pid), Ok(u), Ok(v)) = (
@@ -318,7 +269,7 @@ $per.GetEnumerator() | Sort-Object { [int]$_.Key } | ForEach-Object { '{0}|{1}|{
         let row = rows.into_iter().next()?;
         let percent = row.EstimatedChargeRemaining?.min(100) as u8;
         // BatteryStatus: 1 = discharging, 2 = on AC (charging or full)
-        let charging = row.BatteryStatus.map_or(true, |s| s == 2);
+        let charging = row.BatteryStatus.is_none_or(|s| s == 2);
         Some(BatteryStat { percent, charging })
     }
 }
@@ -347,16 +298,34 @@ mod tests {
         let s = c.collect();
         assert!(s.ram_total_bytes > 0);
         assert!(s.uptime_secs > 0);
-        println!("cpu={:.1}% ram={}/{} swap={}/{} disks={:?} gpu={:?} battery={:?} procs={} per_pid={}",
-            s.cpu_usage, s.ram_used_bytes, s.ram_total_bytes, s.swap_used_bytes,
-            s.swap_total_bytes, s.disks, s.gpu, s.battery, s.process_count, s.processes.len());
+        println!(
+            "cpu={:.1}% ram={}/{} swap={}/{} disks={:?} gpu={:?} battery={:?} procs={} per_pid={}",
+            s.cpu_usage,
+            s.ram_used_bytes,
+            s.ram_total_bytes,
+            s.swap_used_bytes,
+            s.swap_total_bytes,
+            s.disks,
+            s.gpu,
+            s.battery,
+            s.process_count,
+            s.processes.len()
+        );
     }
 
     #[test]
     fn test_disk_pct() {
-        let d = DiskStat { label: "C:".into(), used_bytes: 50, total_bytes: 200 };
+        let d = DiskStat {
+            label: "C:".into(),
+            used_bytes: 50,
+            total_bytes: 200,
+        };
         assert_eq!(d.usage_pct(), 25.0);
-        let e = DiskStat { label: "D:".into(), used_bytes: 0, total_bytes: 0 };
+        let e = DiskStat {
+            label: "D:".into(),
+            used_bytes: 0,
+            total_bytes: 0,
+        };
         assert_eq!(e.usage_pct(), 0.0);
     }
 }

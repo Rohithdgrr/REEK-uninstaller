@@ -2,14 +2,15 @@
 name = "greek-cli"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
 
 [[bin]]
 name = "reek"
 path = "src/main.rs"
 
 [dependencies]
-greek-common = { path = "../greek-common" }
-greek-core = { path = "../greek-core" }
+greek-common = { path = "../greek-common", version = "0.1.0" }
+greek-core = { path = "../greek-core", version = "0.1.0" }
 
 # Serialization
 serde_json = { workspace = true }
