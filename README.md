@@ -26,7 +26,7 @@ system restore points before uninstalling.
 
 ## Requirements
 
-- Rust **1.78.0+** (MSRV). No nightly features used.
+- Rust **1.88.0+** (MSRV). No nightly features used.
 - Windows builds need the MSVC toolchain (via rustup `x86_64-pc-windows-msvc`).
 - Linux: no native bindings required — scanners shell out to `apt`/`rpm`/
   `flatpak`/`brew` when present.

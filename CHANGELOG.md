@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Committed `Cargo.lock` for reproducible, audited builds (was gitignored).
 - Hardened CI: pinned GitHub Actions to immutable commit SHAs; added
   least-privilege `permissions: contents: read`; added `concurrency` and
-  `--locked` on all cargo invocations; added MSRV (1.78.0) and rustdoc jobs.
+  `--locked` on all cargo invocations; added MSRV (1.88.0) and rustdoc jobs.
 - Hardened `cargo-deny` config: deny wildcard dependencies, unknown
   registries/licenses; deny unmaintained/yanked workspace deps.
 - Added explicit `license` fields and versioned path dependencies to all

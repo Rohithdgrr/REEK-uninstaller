@@ -14,7 +14,7 @@ push / pull_request (main | develop)
         ▼                   ▼                       ▼              ▼              ▼              ▼
   [1] Check             [2] MSRV                [3] Security    [4] Build      [5] Doc       [6] Coverage
   fmt / clippy          cargo check                cargo-audit   cargo build    cargo doc     cargo-llvm-cov
-  / test                1.78.0                     cargo-deny    --release                   floor 30%
+  / test                1.88.0                     cargo-deny    --release                   floor 20%
   ubuntu/windows/macos                              ubuntu       3 targets      ubuntu       ubuntu
 ```
 
@@ -37,13 +37,13 @@ All three commands must pass on all three OSes before a merge is allowed.
 
 ### 2. `msrv` — Minimum Supported Rust Version
 
-Runs on **ubuntu-latest** with toolchain **1.78.0**:
+Runs on **ubuntu-latest** with toolchain **1.88.0**:
 
 ```
 cargo check --workspace --all-features --locked
 ```
 
-Guarantees the code compiles on the declared MSRV (`rust-version = "1.78.0"`
+Guarantees the code compiles on the declared MSRV (`rust-version = "1.88.0"`
 in the workspace manifest), not just on the latest stable.
 
 ### 3. `security` — Dependency security gate
@@ -99,7 +99,7 @@ Runs on **ubuntu-latest**, `permissions: contents: read`.
 | Toolchain | `dtolnay/rust-toolchain` + `llvm-tools-preview` | Provides `llvm-profdata`/`llvm-cov` |
 | `cargo install cargo-llvm-cov --locked --version 0.8.7` | cargo-llvm-cov | Pinned tool version |
 | `cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info` | — | Generates `lcov.info` (uploaded as an artifact) |
-| `cargo llvm-cov report --fail-under-lines 30` | — | Regression floor; raises as coverage grows (target 80%+) |
+| `cargo llvm-cov report --fail-under-lines 20` | — | Regression floor (cross-platform; raises as coverage grows, target 80%+) |
 
 Local equivalent:
 

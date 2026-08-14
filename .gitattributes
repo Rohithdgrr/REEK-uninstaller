@@ -1,0 +1,14 @@
+# Normalize line endings: always check out LF so rustfmt
+# (newline_style = "Unix") and shell scripts behave identically on
+# Windows runners that would otherwise apply CRLF (core.autocrlf=true).
+* text=auto eol=lf
+
+# Binaries must never be touched by line-ending normalization.
+*.exe binary
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.woff binary
+*.woff2 binary

@@ -131,7 +131,7 @@ confidence threshold (`DEFAULT_CONFIDENCE_THRESHOLD = 0.7`) must be exceeded.
 
 ### 7. MSRV enforcement
 
-The workspace declares `rust-version = "1.78.0"`; CI runs a dedicated MSRV job
+The workspace declares `rust-version = "1.88.0"`; CI runs a dedicated MSRV job
 so code never silently depends on newer compiler features.
 
 ---
