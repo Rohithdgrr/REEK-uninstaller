@@ -107,9 +107,10 @@ See [CI_CD.md](CI_CD.md) and [SECURITY.md](../SECURITY.md).
 | Gap | Impact | Mitigation status |
 |-----|--------|-------------------|
 | REEK executes whatever `UninstallString` points to | Malicious app can run its own (already-signed) uninstaller — user sees it happen | Inherent to uninstallers; warn user before running unknown apps |
-| `move_to_recycle_bin` currently deletes directly on all platforms (recycle bin not implemented) | Removed files are not recoverable | Consider implementing recycle-bin/trash integration |
-| Uninstaller runs with user's privileges by default | Cannot touch admin-only paths unless REEK is elevated | Run REEK elevated on Windows for full cleanup |
+| Force-remove backs up files/registry before deletion, but non-Windows recycle bin still deletes directly | Removed files are recoverable via REEK's own backup/undo, but not via the OS trash | Windows uses `SHFileOperationW` (recycle bin); Linux/macOS use REEK's `backups/` rollback instead |
+| Uninstaller runs with user's privileges by default | Cannot touch admin-only paths unless REEK is elevated | Run REEK elevated on Windows; TUI disables force-remove when not elevated |
 | Restore point relies on PowerShell `Checkpoint-Computer` | Requires System Restore enabled + privileges | Failure is non-fatal (logged) |
+| Uninstall transaction backups accumulate on disk | Disk usage grows over time; no retention policy yet | `backups/` under the app data dir; add TTL/pruning later |
 
 ## Security review checklist
 

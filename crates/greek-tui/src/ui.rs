@@ -874,7 +874,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &TuiApp) {
             "[U]ninstall ",
             Style::default().fg(Color::Rgb(59, 130, 246)),
         ),
-        Span::styled("[F]orce ", Style::default().fg(Color::Rgb(239, 68, 68))),
+        force_span(),
         Span::styled(
             "[L]eftovers ",
             Style::default().fg(Color::Rgb(16, 185, 129)),
@@ -903,6 +903,23 @@ fn render_footer(f: &mut Frame, area: Rect, app: &TuiApp) {
 
 fn sep() -> Span<'static> {
     Span::styled("│ ", Color::Rgb(203, 213, 225))
+}
+
+/// Whether force-remove is available. On Windows this requires an elevated
+/// process; the footer shows the shield lock warning otherwise.
+fn force_span() -> Span<'static> {
+    #[cfg(all(target_os = "windows", feature = "windows"))]
+    {
+        if greek_windows::is_elevated() {
+            Span::styled("[F]orce ", Style::default().fg(Color::Rgb(239, 68, 68)))
+        } else {
+            Span::styled("[F]orce (admin) ", Color::Rgb(251, 146, 60))
+        }
+    }
+    #[cfg(not(all(target_os = "windows", feature = "windows")))]
+    {
+        Span::styled("[F]orce ", Style::default().fg(Color::Rgb(239, 68, 68)))
+    }
 }
 
 /// Color for a usage percentage: green < 50%, amber < 80%, red above.

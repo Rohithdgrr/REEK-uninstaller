@@ -51,6 +51,20 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features --locked
 ```
 
+If you change cross-platform code, verify the non-Windows targets stay clean:
+
+```bash
+cargo clippy --workspace --all-targets --all-features --target aarch64-apple-darwin -- -D warnings
+```
+
+To check test coverage (CI enforces a regression floor via cargo-llvm-cov):
+
+```bash
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --locked --version 0.8.7
+make coverage
+```
+
 ## Dependency changes
 
 Because REEK ships binaries, dependency hygiene is a security control:

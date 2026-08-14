@@ -437,6 +437,10 @@ impl UninstallStrategy for ForceRemoveStrategy {
             ..Default::default()
         };
 
+        // Record a rollback-able transaction before any destructive action so
+        // the uninstall can be undone.
+        let mut transaction = crate::backup::UninstallTransaction::new(&app.name)?;
+
         // Kill processes
         if options.kill_processes {
             if let Some(ref location) = app.install_location {
@@ -448,6 +452,10 @@ impl UninstallStrategy for ForceRemoveStrategy {
         // Delete files
         if let Some(ref location) = app.install_location {
             if location.exists() {
+                // Back up the file tree before deletion so it can be restored.
+                if let Err(e) = transaction.add_file_or_dir(location) {
+                    tracing::warn!("Failed to back up {}: {}", location.display(), e);
+                }
                 if options.move_to_recycle_bin {
                     crate::utils::move_to_recycle_bin(location)?;
                 } else {
@@ -459,6 +467,9 @@ impl UninstallStrategy for ForceRemoveStrategy {
 
         // Delete registry keys
         for key in &app.registry_keys {
+            if let Err(e) = transaction.add_registry_key(&key.path) {
+                tracing::warn!("Failed to back up registry key {}: {}", key.path, e);
+            }
             match crate::utils::delete_registry_key(&key.path) {
                 Ok(()) => {
                     result.registry_keys_deleted.push(key.path.clone());
@@ -468,6 +479,19 @@ impl UninstallStrategy for ForceRemoveStrategy {
                     tracing::warn!("Failed to delete registry key {}: {}", key.path, e);
                 }
             }
+        }
+
+        // Persist the manifest so the transaction survives a restart.
+        if let Err(e) = transaction.save_manifest() {
+            tracing::warn!("Failed to save backup manifest: {}", e);
+        } else if !transaction.entries.is_empty() {
+            result.backup_id = Some(transaction.id);
+            tracing::info!(
+                "Backup transaction {} recorded for {} ({} items)",
+                transaction.id,
+                app.name,
+                transaction.entries.len()
+            );
         }
 
         result.success = true;

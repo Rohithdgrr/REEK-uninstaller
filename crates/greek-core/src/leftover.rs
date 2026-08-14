@@ -269,6 +269,7 @@ impl Default for RegistryLeftoverAnalyzer {
     }
 }
 
+#[cfg(target_os = "windows")]
 impl RegistryLeftoverAnalyzer {
     pub fn new() -> Self {
         Self {

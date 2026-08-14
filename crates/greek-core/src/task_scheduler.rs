@@ -2,7 +2,7 @@
 
 use greek_common::{ArtifactType, GreekError, InstalledApp, LeftoverArtifact, Result, SafetyLevel};
 use std::path::PathBuf;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Scheduled task information
 #[derive(Debug, Clone)]
@@ -90,7 +90,7 @@ impl TaskSchedulerScanner {
             .map_err(|e| GreekError::ScanError(format!("Failed to execute PowerShell: {}", e)))?;
 
         if !output.status.success() {
-            warn!("Failed to enumerate scheduled tasks");
+            tracing::warn!("Failed to enumerate scheduled tasks");
             return Ok(Vec::new());
         }
 
@@ -251,18 +251,18 @@ impl TaskSchedulerScanner {
     }
 
     /// Delete a scheduled task
-    pub async fn delete_task(&self, task_path: &str) -> Result<()> {
+    pub async fn delete_task(&self, _task_path: &str) -> Result<()> {
         #[cfg(target_os = "windows")]
         {
             use std::process::Command;
 
-            info!("Deleting scheduled task: {}", task_path);
+            info!("Deleting scheduled task: {}", _task_path);
 
             let ps_command = format!(
                 r#"
                 Unregister-ScheduledTask -TaskPath '{}' -Confirm:$false -ErrorAction Stop
                 "#,
-                task_path.replace('\'', "''")
+                _task_path.replace('\'', "''")
             );
 
             let output = Command::new("powershell.exe")
@@ -271,7 +271,7 @@ impl TaskSchedulerScanner {
                 .map_err(|e| GreekError::SystemError(format!("Failed to delete task: {}", e)))?;
 
             if output.status.success() {
-                info!("Successfully deleted task: {}", task_path);
+                info!("Successfully deleted task: {}", _task_path);
                 Ok(())
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);

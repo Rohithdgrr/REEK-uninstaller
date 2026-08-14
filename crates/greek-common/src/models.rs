@@ -339,6 +339,7 @@ pub struct UninstallResult {
     pub services_stopped: Vec<String>,
     pub errors: Vec<String>,
     pub restore_point_id: Option<String>,
+    pub backup_id: Option<Uuid>,
 }
 
 impl Default for UninstallResult {
@@ -356,6 +357,7 @@ impl Default for UninstallResult {
             services_stopped: Vec::new(),
             errors: Vec::new(),
             restore_point_id: None,
+            backup_id: None,
         }
     }
 }

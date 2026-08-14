@@ -1,7 +1,11 @@
 // greek-windows - Windows-specific implementations for REEK Ultimate Uninstaller
 
 #[cfg(target_os = "windows")]
+pub mod elevation;
+#[cfg(target_os = "windows")]
 pub mod icon;
+#[cfg(target_os = "windows")]
+pub mod recycle;
 #[cfg(target_os = "windows")]
 pub mod registry;
 #[cfg(target_os = "windows")]
@@ -16,7 +20,11 @@ pub mod system_stats;
 pub mod wmi;
 
 #[cfg(target_os = "windows")]
+pub use elevation::*;
+#[cfg(target_os = "windows")]
 pub use icon::*;
+#[cfg(target_os = "windows")]
+pub use recycle::*;
 #[cfg(target_os = "windows")]
 pub use registry::*;
 #[cfg(target_os = "windows")]

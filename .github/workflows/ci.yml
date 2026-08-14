@@ -148,6 +148,43 @@ jobs:
         path: target/${{ matrix.target }}/release/reek*
         if-no-files-found: error
 
+  coverage:
+    name: Coverage (llvm-cov)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      with:
+        persist-credentials: false
+
+    - name: Install Rust toolchain (with llvm-tools)
+      uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1 stable
+      with:
+        components: llvm-tools-preview
+
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@cf9339e04bb8069e37c71ff4a0e6a970f35d6f7d # v2.7.0
+
+    - name: Install cargo-llvm-cov
+      run: cargo install cargo-llvm-cov --locked --version 0.8.7
+
+    - name: Generate coverage report
+      run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+
+    - name: Upload lcov report
+      uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+      with:
+        name: lcov.info
+        path: lcov.info
+        if-no-files-found: error
+
+    # Regression floor, raised as coverage grows (target: 80%+).
+    - name: Enforce coverage floor
+      run: cargo llvm-cov report --fail-under-lines 30
+
   doc:
     name: Rustdoc
     runs-on: ubuntu-latest

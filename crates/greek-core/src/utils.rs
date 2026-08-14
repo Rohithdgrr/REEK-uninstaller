@@ -83,30 +83,21 @@ pub fn delete_directory(path: &Path) -> Result<()> {
 }
 
 pub fn move_to_recycle_bin(path: &Path) -> Result<()> {
-    // Platform-specific implementation
-    #[cfg(target_os = "windows")]
+    #[cfg(all(target_os = "windows", feature = "windows"))]
     {
-        // Windows-specific recycle bin implementation
-        // This would use Windows API to move to recycle bin
-        tracing::warn!("Recycle bin not implemented yet, deleting directly");
-        delete_directory(path)?;
+        greek_windows::move_to_recycle_bin(path)
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(not(all(target_os = "windows", feature = "windows")))]
     {
-        // Linux-specific implementation (trash-cli or similar)
-        tracing::warn!("Recycle bin not implemented yet, deleting directly");
-        delete_directory(path)?;
+        // No recycle-bin integration available for this platform/feature set.
+        // Fall back to a direct delete rather than silently succeeding.
+        tracing::warn!(
+            "Recycle bin not available, deleting directly: {}",
+            path.display()
+        );
+        delete_directory(path)
     }
-
-    #[cfg(target_os = "macos")]
-    {
-        // macOS-specific implementation
-        tracing::warn!("Recycle bin not implemented yet, deleting directly");
-        delete_directory(path)?;
-    }
-
-    Ok(())
 }
 
 /// Delete a registry key (subkey) by its full path, e.g.

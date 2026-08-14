@@ -98,7 +98,7 @@ impl BrowserExtensionScanner {
                 #[cfg(target_os = "linux")]
                 {
                     Some(
-                        PathBuf::from(&home)
+                        PathBuf::from(&_home)
                             .join(".config")
                             .join("google-chrome")
                             .join("Default")
@@ -108,7 +108,7 @@ impl BrowserExtensionScanner {
                 #[cfg(target_os = "macos")]
                 {
                     Some(
-                        PathBuf::from(&home)
+                        PathBuf::from(&_home)
                             .join("Library")
                             .join("Application Support")
                             .join("Google")
@@ -134,12 +134,12 @@ impl BrowserExtensionScanner {
                 }
                 #[cfg(target_os = "linux")]
                 {
-                    Some(PathBuf::from(&home).join(".mozilla").join("firefox"))
+                    Some(PathBuf::from(&_home).join(".mozilla").join("firefox"))
                 }
                 #[cfg(target_os = "macos")]
                 {
                     Some(
-                        PathBuf::from(&home)
+                        PathBuf::from(&_home)
                             .join("Library")
                             .join("Application Support")
                             .join("Firefox")
@@ -166,7 +166,7 @@ impl BrowserExtensionScanner {
                 #[cfg(target_os = "linux")]
                 {
                     Some(
-                        PathBuf::from(&home)
+                        PathBuf::from(&_home)
                             .join(".config")
                             .join("microsoft-edge")
                             .join("Default")
@@ -176,7 +176,7 @@ impl BrowserExtensionScanner {
                 #[cfg(target_os = "macos")]
                 {
                     Some(
-                        PathBuf::from(&home)
+                        PathBuf::from(&_home)
                             .join("Library")
                             .join("Application Support")
                             .join("Microsoft Edge")
@@ -202,7 +202,7 @@ impl BrowserExtensionScanner {
                 #[cfg(target_os = "linux")]
                 {
                     Some(
-                        PathBuf::from(&home)
+                        PathBuf::from(&_home)
                             .join(".config")
                             .join("opera")
                             .join("Extensions"),
@@ -211,7 +211,7 @@ impl BrowserExtensionScanner {
                 #[cfg(target_os = "macos")]
                 {
                     Some(
-                        PathBuf::from(&home)
+                        PathBuf::from(&_home)
                             .join("Library")
                             .join("Application Support")
                             .join("com.operasoftware.Opera")

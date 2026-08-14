@@ -16,12 +16,14 @@ use ratatui::Terminal;
 use std::sync::{mpsc, Arc};
 #[cfg(all(target_os = "windows", feature = "windows"))]
 use std::time::Duration;
+use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 
 pub struct TuiApp {
     _config: GreekConfig,
     theme: TuiTheme,
     service: Arc<Mutex<GreekAppService>>,
+    runtime_handle: Handle,
     should_quit: bool,
 
     // App state
@@ -79,7 +81,7 @@ pub enum OperationState {
 }
 
 impl TuiApp {
-    pub fn new(config: GreekConfig, service: GreekAppService) -> Self {
+    pub fn new(config: GreekConfig, service: GreekAppService, runtime_handle: Handle) -> Self {
         let fuzzy_matcher = SkimMatcherV2::default();
 
         #[cfg(all(target_os = "windows", feature = "windows"))]
@@ -105,6 +107,7 @@ impl TuiApp {
             _config: config,
             theme: TuiTheme::light(),
             service: Arc::new(Mutex::new(service)),
+            runtime_handle,
             should_quit: false,
             apps: Vec::new(),
             filtered_apps: Vec::new(),
@@ -274,6 +277,18 @@ impl TuiApp {
 
     fn execute_action(&mut self, action: Action) {
         self.show_context_menu = false;
+
+        // Force removal is destructive and touches shared/protected locations;
+        // gate it behind Administrator privileges on Windows.
+        #[cfg(all(target_os = "windows", feature = "windows"))]
+        if matches!(action, Action::ForceRemove) && !greek_windows::is_elevated() {
+            self.status_message = Some((
+                "Force remove requires Administrator privileges. Run REEK as Administrator.".into(),
+                true,
+            ));
+            return;
+        }
+
         let app = match action {
             Action::ViewDetails => {
                 self.show_details = true;
@@ -302,12 +317,12 @@ impl TuiApp {
         match action {
             Action::Uninstall => {
                 self.current_operation = Some(OperationState::Uninstalling(app.name.clone()));
-                tokio::task::spawn_blocking(move || {
-                    let rt = tokio::runtime::Runtime::new().unwrap();
-                    let result = rt.block_on(async {
+                let handle = self.runtime_handle.clone();
+                handle.spawn(async move {
+                    let result = {
                         let svc = service.lock().await;
                         svc.uninstall_app(&app, UninstallOptions::standard()).await
-                    });
+                    };
                     let _ = tx.send(match result {
                         Ok(r) => Ok(format!(
                             "Uninstall {}: {}",
@@ -320,12 +335,12 @@ impl TuiApp {
             }
             Action::ForceRemove => {
                 self.current_operation = Some(OperationState::ForceRemoving(app.name.clone()));
-                tokio::task::spawn_blocking(move || {
-                    let rt = tokio::runtime::Runtime::new().unwrap();
-                    let result = rt.block_on(async {
+                let handle = self.runtime_handle.clone();
+                handle.spawn(async move {
+                    let result = {
                         let svc = service.lock().await;
                         svc.force_remove_app(&app, UninstallOptions::force()).await
-                    });
+                    };
                     let _ = tx.send(match result {
                         Ok(r) => Ok(format!(
                             "Force remove {}: {}",
@@ -338,12 +353,12 @@ impl TuiApp {
             }
             Action::ScanLeftovers => {
                 self.current_operation = Some(OperationState::AnalyzingLeftovers(app.name.clone()));
-                tokio::task::spawn_blocking(move || {
-                    let rt = tokio::runtime::Runtime::new().unwrap();
-                    let result = rt.block_on(async {
+                let handle = self.runtime_handle.clone();
+                handle.spawn(async move {
+                    let result = {
                         let svc = service.lock().await;
                         svc.analyze_leftovers(&app).await
-                    });
+                    };
                     let _ = tx.send(match result {
                         Ok(artifacts) => Ok(format!(
                             "Leftover scan for {}: {} artifacts found",
@@ -547,12 +562,12 @@ impl TuiApp {
         let service = Arc::clone(&self.service);
         let (tx, rx) = mpsc::channel();
         self.scan_result_receiver = Some(rx);
-        tokio::task::spawn_blocking(move || {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            let result = rt.block_on(async {
+        let handle = self.runtime_handle.clone();
+        handle.spawn(async move {
+            let result = {
                 let svc = service.lock().await;
                 svc.scan_all_apps().await
-            });
+            };
             let _ = tx.send(match result {
                 Ok(a) => Ok(a),
                 Err(e) => Err(e.to_string()),

@@ -41,6 +41,12 @@ run-tui: ## Run the TUI application
 
 check: fmt-check clippy test ## Run all checks (format, clippy, test)
 
+coverage: ## Generate an lcov coverage report (requires cargo-llvm-cov + llvm-tools)
+	cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+
+coverage-report: ## Print coverage summary (line/region) for all crates
+	cargo llvm-cov --workspace --all-features --summary-only
+
 ci: ## Run CI checks
 	cargo test --workspace --all-features
 	cargo clippy --workspace --all-targets --all-features -- -D warnings

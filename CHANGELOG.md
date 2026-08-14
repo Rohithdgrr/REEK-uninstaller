@@ -33,6 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   without a shell.
 - Restore point created before uninstall by default; failures are non-fatal
   and logged.
+- Force-remove now records a rollback-able **backup transaction** before
+  deleting anything (files/directories copied, registry keys exported), so an
+  uninstall can be undone via `undo_uninstall`. Windows file removal uses the
+  OS Recycle Bin (`SHFileOperationW`) instead of a permanent delete.
+- Force-remove is disabled in the TUI unless running elevated on Windows, and
+  the footer shows `[F]orce (admin)` when privileges are missing.
 
 ### Changed
 - Fixed cross-platform feature gating (`#[cfg(all(target_os = "windows",
@@ -43,6 +49,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `greek-windows`.
 - Made the full quality gate pass: clippy `-D warnings`, rustfmt, and all
   workspace tests across features.
+- TUI no longer spawns a fresh `tokio::Runtime` per action; it reuses the
+  runtime handle created in `main` (`Handle::spawn`).
+- Fixed macOS/Linux-only build errors: `home` shadowing in
+  `browser_extensions.rs`, Windows-only `RegistryLeftoverAnalyzer` impl,
+  unused import/variable in `task_scheduler.rs`.
+
+### Added (this batch)
+- Uninstall transaction backup/rollback (`greek-core/src/backup.rs`) with
+  manifest persistence, listing, and `GreekAppService::undo_uninstall`.
+- Windows Recycle Bin support (`greek-windows/src/recycle.rs`).
+- Windows elevation detection (`greek-windows/src/elevation.rs`) + TUI gating.
+- Coverage job in CI (cargo-llvm-cov, pinned 0.8.7) with a 30% regression
+  floor and `lcov.info` artifact; `make coverage` targets.
 
 ### Fixed
 - Deadlocks in rayon-based parallel scans (Mutex removed; per-fork merging).

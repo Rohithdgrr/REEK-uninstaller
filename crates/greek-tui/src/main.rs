@@ -78,7 +78,7 @@ fn main() -> color_eyre::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let scan_result = rt.block_on(async { service.scan_all_apps().await });
 
-    let mut app = TuiApp::new(config, service);
+    let mut app = TuiApp::new(config, service, rt.handle().clone());
 
     match scan_result {
         Ok(apps) => {

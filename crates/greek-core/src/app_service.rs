@@ -277,6 +277,24 @@ impl GreekAppService {
         BatchQueue::new(options)
     }
 
+    /// Undo a previously recorded uninstall transaction, restoring backed-up
+    /// files and registry keys.
+    pub async fn undo_uninstall(&self, backup_id: uuid::Uuid) -> Result<()> {
+        let transactions = crate::backup::list_transactions()?;
+        let tx = transactions
+            .into_iter()
+            .find(|t| t.id == backup_id)
+            .ok_or_else(|| {
+                GreekError::NotFound(format!("No backup transaction found for {}", backup_id))
+            })?;
+        tx.rollback()
+    }
+
+    /// List recorded uninstall transactions that can still be undone.
+    pub fn list_undoable_transactions(&self) -> Result<Vec<crate::backup::UninstallTransaction>> {
+        crate::backup::list_transactions()
+    }
+
     /// Execute a batch queue
     pub async fn execute_batch(&self, batch: &mut BatchQueue) -> Result<Vec<UninstallResult>> {
         let total = batch.items.len();

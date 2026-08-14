@@ -4,6 +4,14 @@ use greek_common::*;
 use greek_core::*;
 use greek_tui::*;
 
+fn test_app() -> TuiApp {
+    let config = GreekConfig::default();
+    let service = GreekAppService::new(config.clone()).unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    // The handle keeps the runtime alive after `rt` is dropped.
+    TuiApp::new(config, service, rt.handle().clone())
+}
+
 #[test]
 fn test_tui_theme_default() {
     let theme = TuiTheme::default();
@@ -81,9 +89,7 @@ fn test_status_bar_widget() {
 
 #[test]
 fn test_tui_app_creation() {
-    let config = GreekConfig::default();
-    let service = GreekAppService::new(config.clone()).unwrap();
-    let app = TuiApp::new(config, service);
+    let app = test_app();
 
     assert_eq!(app.get_selected_index(), 0);
     assert!(app.get_selected_apps().is_empty());
@@ -93,9 +99,7 @@ fn test_tui_app_creation() {
 
 #[test]
 fn test_tui_app_theme() {
-    let config = GreekConfig::default();
-    let service = GreekAppService::new(config.clone()).unwrap();
-    let app = TuiApp::new(config, service);
+    let app = test_app();
 
     let theme = app.theme();
     assert!(!theme.theme.name.is_empty());
@@ -103,27 +107,21 @@ fn test_tui_app_theme() {
 
 #[test]
 fn test_tui_app_toggle_details() {
-    let config = GreekConfig::default();
-    let service = GreekAppService::new(config.clone()).unwrap();
-    let app = TuiApp::new(config, service);
+    let app = test_app();
 
     assert!(app.is_showing_details());
 }
 
 #[test]
 fn test_tui_app_toggle_help() {
-    let config = GreekConfig::default();
-    let service = GreekAppService::new(config.clone()).unwrap();
-    let app = TuiApp::new(config, service);
+    let app = test_app();
 
     assert!(!app.is_showing_help());
 }
 
 #[test]
 fn test_tui_app_scan_status() {
-    let config = GreekConfig::default();
-    let service = GreekAppService::new(config.clone()).unwrap();
-    let app = TuiApp::new(config, service);
+    let app = test_app();
 
     assert!(matches!(app.scan_status(), ScanStatus::Idle));
 }

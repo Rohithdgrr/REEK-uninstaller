@@ -10,12 +10,12 @@ on GitHub Actions.
 push / pull_request (main | develop)
                 │
                 ▼
-        ┌───────┴───────────┬───────────────────────┬──────────────┬──────────────┐
-        ▼                   ▼                       ▼              ▼              ▼
-  [1] Check             [2] MSRV                [3] Security    [4] Build      [5] Doc
-  fmt / clippy          cargo check                cargo-audit   cargo build    cargo doc
-  / test                1.78.0                     cargo-deny    --release
-  ubuntu/windows/macos                              ubuntu       3 targets      ubuntu
+        ┌───────┴───────────┬───────────────────────┬──────────────┬──────────────┬──────────────┐
+        ▼                   ▼                       ▼              ▼              ▼              ▼
+  [1] Check             [2] MSRV                [3] Security    [4] Build      [5] Doc       [6] Coverage
+  fmt / clippy          cargo check                cargo-audit   cargo build    cargo doc     cargo-llvm-cov
+  / test                1.78.0                     cargo-deny    --release                   floor 30%
+  ubuntu/windows/macos                              ubuntu       3 targets      ubuntu       ubuntu
 ```
 
 ## Jobs
@@ -88,6 +88,26 @@ Runs on **ubuntu-latest**:
 
 ```
 cargo doc --workspace --all-features --no-deps --locked
+```
+
+### 6. `coverage` — Regression floor
+
+Runs on **ubuntu-latest**, `permissions: contents: read`.
+
+| Step | Tool | Gate |
+|------|------|------|
+| Toolchain | `dtolnay/rust-toolchain` + `llvm-tools-preview` | Provides `llvm-profdata`/`llvm-cov` |
+| `cargo install cargo-llvm-cov --locked --version 0.8.7` | cargo-llvm-cov | Pinned tool version |
+| `cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info` | — | Generates `lcov.info` (uploaded as an artifact) |
+| `cargo llvm-cov report --fail-under-lines 30` | — | Regression floor; raises as coverage grows (target 80%+) |
+
+Local equivalent:
+
+```bash
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --locked --version 0.8.7
+make coverage        # write lcov.info
+make coverage-report # print per-crate summary
 ```
 
 ## CI/CD security
