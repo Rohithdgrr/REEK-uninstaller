@@ -1,0 +1,37 @@
+# Clippy linter configuration
+# https://github.com/rust-lang/rust-clippy
+
+# Cognitive complexity threshold
+cognitive-complexity-threshold = 30
+
+# Minimum type repetition threshold
+type-complexity-threshold = 250
+
+# Disallow certain methods
+disallowed-methods = []
+
+# Disallow certain types
+disallowed-types = []
+
+# Documentation requirements
+missing-docs-in-private-items = false
+
+# Single char binding names threshold
+single-char-binding-names-threshold = 4
+
+# Literal representation threshold
+literal-representation-threshold = 30
+
+# Maximum function params
+too-many-arguments-threshold = 7
+
+# Maximum struct fields
+type-complexity-threshold = 250
+
+# Allow certain lints
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true
+allow-dbg-in-tests = true
+
+# Warn on certain lints
+warn-on-all-wildcard-imports = true

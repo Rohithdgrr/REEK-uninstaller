@@ -1,0 +1,54 @@
+[package]
+name = "greek-platform"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+greek-common = { path = "../greek-common" }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+color-eyre = { workspace = true }
+
+# Tracing
+tracing = { workspace = true }
+
+# Linux package managers (optional)
+rust-apt = { version = "0.7.0", optional = true }
+alpm = { version = "2.2.3", optional = true }
+rpm = { version = "0.15.0", optional = true }
+
+# macOS (optional)
+plist = { version = "1.7.0", optional = true }
+core-foundation = { version = "0.9.4", optional = true }
+
+# Flatpak/Snap (optional)
+flatpak = { version = "0.5.0", optional = true }
+
+# Linux desktop
+[target.'cfg(target_os = "linux")'.dependencies]
+freedesktop-desktop-entry = "0.7.0"
+linicon = "2.3.0"
+
+# macOS
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2.7"
+objc-foundation = "0.1.1"
+
+# Unix/Linux
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[features]
+default = []
+linux = ["rust-apt", "alpm", "rpm"]
+macos = ["plist", "core-foundation"]
+universal = ["linux", "macos"]

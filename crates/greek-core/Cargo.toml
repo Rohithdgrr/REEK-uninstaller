@@ -1,0 +1,65 @@
+[package]
+name = "greek-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+greek-common = { path = "../greek-common" }
+greek-windows = { path = "../greek-windows" }
+
+# Serialization
+serde_json = { workspace = true }
+
+# Async Runtime
+tokio = { workspace = true }
+tokio-util = "0.7.11"
+async-trait = { workspace = true }
+
+# Process Management
+sysinfo = "0.31.2"
+which = "6.0.3"
+
+# IDs & Time
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+# Tracing
+tracing = { workspace = true }
+
+# File System
+walkdir = "2.5.0"
+ignore = "0.4.22"
+jwalk = "0.8.1"
+pathdiff = "0.2.1"
+
+# Pattern Matching
+glob = "0.3.1"
+regex = "1.10.6"
+fuzzy-matcher = "0.3.7"
+
+# Data Processing
+dashmap = { workspace = true }
+rayon = "1.10.0"
+
+# Human-readable formatting
+humansize = "2.1.3"
+humantime = "2.1.0"
+
+# Hashing
+sha2 = "0.10.8"
+hex = "0.4.3"
+
+# Configuration
+toml = { workspace = true }
+directories = "5.0.1"
+
+# Error handling
+thiserror = { workspace = true }
+color-eyre = { workspace = true }
+
+# HTTP (for store API/metadata)
+reqwest = { version = "0.12.5", features = ["json"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+mockall = { workspace = true }

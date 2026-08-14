@@ -1,0 +1,33 @@
+[package]
+name = "greek-tui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+greek-common = { path = "../greek-common" }
+greek-core = { path = "../greek-core" }
+greek-windows = { path = "../greek-windows" }
+
+# TUI Framework
+ratatui = { version = "0.28.0", features = ["unstable-widget-ref"] }
+crossterm = { version = "0.28.1", features = ["event-stream"] }
+
+# IDs
+uuid = { workspace = true }
+
+# Time (process start timestamps)
+chrono = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+color-eyre = { workspace = true }
+
+# Tracing
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Base64 (decode icon pixel data from app metadata)
+base64 = "0.22"

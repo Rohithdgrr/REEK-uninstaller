@@ -1,0 +1,38 @@
+[package]
+name = "greek-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "reek"
+path = "src/main.rs"
+
+[dependencies]
+greek-common = { path = "../greek-common" }
+greek-core = { path = "../greek-core" }
+
+# Serialization
+serde_json = { workspace = true }
+
+# CLI Framework
+clap = { version = "4.5.13", features = ["derive", "env", "cargo"] }
+clap_complete = "4.5.12"
+
+# Output Formatting
+comfy-table = "7.1.1"
+indicatif = "0.17.8"
+console = "0.15.8"
+
+# Interactive prompts
+dialoguer = "0.11.0"
+colored = "2.1.0"
+
+# Async
+tokio = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+color-eyre = { workspace = true }
+
+# Tracing
+tracing-subscriber = { workspace = true }
