@@ -44,7 +44,7 @@ windows = { version = "0.58.0", features = [
 winreg = "0.52.0"
 
 # WMI
-wmi = "0.14.0"
+wmi = "0.18.4"
 
 # PowerShell interop
 powershell_script = "1.0.4"
