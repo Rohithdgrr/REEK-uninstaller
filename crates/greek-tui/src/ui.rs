@@ -251,7 +251,7 @@ fn render_app_list(f: &mut Frame, area: Rect, app: &TuiApp) {
             let name = &app_item.name;
             let ver = app_item.version.as_deref().unwrap_or("");
             let pub_str = app_item.publisher.as_deref().unwrap_or("");
-            let size = app_item.display_size();
+            let size = app_item.display_size().unwrap_or_else(|| "Unknown".to_string());
 
             let name_trunc = truncate(name, col_widths[2] as usize - 1);
             let pub_trunc = truncate(pub_str, col_widths[4] as usize - 1);
@@ -432,7 +432,7 @@ fn render_details(f: &mut Frame, area: Rect, app: &TuiApp) {
             &label,
             &val,
         );
-        detail_row(&mut lines, "Size", &a.display_size(), &label, &val);
+        detail_row(&mut lines, "Size", &a.display_size().unwrap_or_else(|| "Unknown".to_string()), &label, &val);
         detail_row(
             &mut lines,
             "Date",

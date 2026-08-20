@@ -13,12 +13,21 @@ pub fn get_arch() -> &'static str {
     std::env::consts::ARCH
 }
 
-/// Check if running with elevated privileges
+/// Check if running with elevated privileges.
+///
+/// On Windows this delegates to `greek_windows::is_elevated()` which uses the
+/// Win32 `TokenElevation` API. On Unix it checks for effective UID 0.
 pub fn is_elevated() -> bool {
-    #[cfg(target_os = "windows")]
+    #[cfg(all(target_os = "windows", feature = "greek-windows"))]
     {
-        // Windows-specific elevation check
-        false // Placeholder
+        greek_windows::is_elevated()
+    }
+
+    #[cfg(all(target_os = "windows", not(feature = "greek-windows")))]
+    {
+        // Fallback when greek-windows feature is disabled: always returns false,
+        // which is the safe default (non-elevated).
+        false
     }
 
     #[cfg(unix)]

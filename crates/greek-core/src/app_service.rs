@@ -5,9 +5,11 @@ use crate::leftover::LeftoverAnalyzerManager;
 use crate::scanner::ScannerManager;
 use crate::uninstaller::UninstallerManager;
 use greek_common::{
-    AppEvent, BatchQueue, GreekConfig, GreekError, InstalledApp, LeftoverArtifact, Result,
-    UninstallOptions, UninstallResult,
+    AppEvent, ArtifactType, BatchQueue, GreekConfig, GreekError, InstalledApp, LeftoverArtifact,
+    Result, SafetyLevel, UninstallOptions, UninstallResult,
 };
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 
 #[cfg(all(target_os = "windows", feature = "windows"))]
@@ -20,6 +22,13 @@ pub struct GreekAppService {
     uninstaller_manager: UninstallerManager,
     leftover_analyzer_manager: LeftoverAnalyzerManager,
     event_sender: broadcast::Sender<AppEvent>,
+    /// Cache of leftover artifacts from the most recent analysis, keyed by app id.
+    /// Used by `clean_leftovers` to look up artifacts by UUID without re-scanning.
+    artifact_cache: HashMap<uuid::Uuid, LeftoverArtifact>,
+    /// MED-1: cached scan results with timestamp for TTL-based cache.
+    app_cache: Option<(Vec<InstalledApp>, Instant)>,
+    /// TTL for the app scan cache (default 30 seconds).
+    cache_ttl: Duration,
 }
 
 impl GreekAppService {
@@ -69,12 +78,16 @@ impl GreekAppService {
             tracing::info!("  - Scanner: {}", name);
         }
 
+        let cache_ttl = Duration::from_secs(30);
         let service = Self {
             config,
             scanner_manager,
             uninstaller_manager,
             leftover_analyzer_manager,
             event_sender,
+            artifact_cache: HashMap::new(),
+            app_cache: None,
+            cache_ttl,
         };
 
         Ok(service)
@@ -100,8 +113,19 @@ impl GreekAppService {
         self.leftover_analyzer_manager.register_analyzer(analyzer);
     }
 
-    /// Scan all sources for installed applications
-    pub async fn scan_all_apps(&self) -> Result<Vec<InstalledApp>> {
+    /// Scan all sources for installed applications.
+    ///
+    /// MED-1: results are cached for `cache_ttl` to avoid redundant full
+    /// system scans when multiple operations occur in quick succession.
+    pub async fn scan_all_apps(&mut self) -> Result<Vec<InstalledApp>> {
+        // Check cache first
+        if let Some((ref cached, timestamp)) = self.app_cache {
+            if timestamp.elapsed() < self.cache_ttl {
+                tracing::debug!("Returning cached app list ({} apps)", cached.len());
+                return Ok(cached.clone());
+            }
+        }
+
         tracing::info!("Starting full system scan");
 
         let _ = self.event_sender.send(AppEvent::ScanStarted {
@@ -137,11 +161,14 @@ impl GreekAppService {
 
         tracing::info!("System scan completed, found {} applications", apps.len());
 
+        // MED-1: cache the results
+        self.app_cache = Some((apps.clone(), Instant::now()));
+
         Ok(apps)
     }
 
     /// Get detailed info about a specific app
-    pub async fn get_app_details(&self, app_id: uuid::Uuid) -> Result<InstalledApp> {
+    pub async fn get_app_details(&mut self, app_id: uuid::Uuid) -> Result<InstalledApp> {
         let apps = self.scan_all_apps().await?;
 
         apps.into_iter()
@@ -227,8 +254,11 @@ impl GreekAppService {
         self.uninstall_app(app, force_options).await
     }
 
-    /// Analyze leftovers for an app
-    pub async fn analyze_leftovers(&self, app: &InstalledApp) -> Result<Vec<LeftoverArtifact>> {
+    /// Analyze leftovers for an app.
+    ///
+    /// Results are cached internally so `clean_leftovers` can look them up
+    /// by UUID without re-scanning.
+    pub async fn analyze_leftovers(&mut self, app: &InstalledApp) -> Result<Vec<LeftoverArtifact>> {
         tracing::info!("Analyzing leftovers for: {}", app.name);
 
         let _ = self
@@ -241,7 +271,9 @@ impl GreekAppService {
             .await
             .map_err(|e| GreekError::AnalysisError(e.to_string()))?;
 
+        // Cache artifacts so clean_leftovers can look them up by UUID
         for artifact in &artifacts {
+            self.artifact_cache.insert(artifact.id, artifact.clone());
             let _ = self.event_sender.send(AppEvent::LeftoverFound {
                 app_id: app.id,
                 artifact: artifact.clone(),
@@ -257,18 +289,90 @@ impl GreekAppService {
         Ok(artifacts)
     }
 
-    /// Clean up leftovers
+    /// Clean up leftover artifacts by their UUIDs.
+    ///
+    /// Security: checks every artifact path against `PROTECTED_PATHS` and
+    /// respects `SafetyLevel` — only `Safe` artifacts are deleted unless
+    /// `options.force` is true.
     pub async fn clean_leftovers(
         &self,
         artifact_ids: Vec<uuid::Uuid>,
-        _options: UninstallOptions,
+        options: UninstallOptions,
     ) -> Result<()> {
         tracing::info!("Cleaning up {} leftover artifacts", artifact_ids.len());
 
-        for artifact_id in artifact_ids {
-            tracing::info!("Would delete artifact: {}", artifact_id);
+        let protected = greek_common::PROTECTED_PATHS
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+
+        for artifact_id in &artifact_ids {
+            let artifact = self
+                .artifact_cache
+                .get(artifact_id)
+                .ok_or_else(|| {
+                    GreekError::NotFound(format!(
+                        "Artifact {} not found in cache; run analyze_leftovers first",
+                        artifact_id
+                    ))
+                })?;
+
+            // Refuse to delete protected paths
+            if greek_common::is_protected_path(&artifact.path, &protected) {
+                tracing::error!(
+                    "Blocked deletion of protected path: {}",
+                    artifact.path.display()
+                );
+                continue;
+            }
+
+            // Only delete Safe artifacts unless force mode
+            if artifact.safety_level != SafetyLevel::Safe && !options.force {
+                tracing::warn!(
+                    "Skipping non-safe artifact ({:?}): {}",
+                    artifact.safety_level,
+                    artifact.path.display()
+                );
+                continue;
+            }
+
+            // Delete based on artifact type
+            match artifact.artifact_type {
+                ArtifactType::File => {
+                    if artifact.path.exists() {
+                        crate::utils::delete_file(&artifact.path)?;
+                        tracing::info!("Deleted leftover file: {}", artifact.path.display());
+                    }
+                }
+                ArtifactType::Directory => {
+                    if artifact.path.exists() {
+                        crate::utils::delete_directory(&artifact.path)?;
+                        tracing::info!(
+                            "Deleted leftover directory: {}",
+                            artifact.path.display()
+                        );
+                    }
+                }
+                ArtifactType::RegistryKey => {
+                    crate::utils::delete_registry_key(
+                        &artifact.path.to_string_lossy(),
+                    )?;
+                    tracing::info!(
+                        "Deleted leftover registry key: {}",
+                        artifact.path.display()
+                    );
+                }
+                other => {
+                    tracing::warn!(
+                        "Unsupported artifact type {:?} for: {}",
+                        other,
+                        artifact.path.display()
+                    );
+                }
+            }
         }
 
+        tracing::info!("Leftover cleanup completed");
         Ok(())
     }
 

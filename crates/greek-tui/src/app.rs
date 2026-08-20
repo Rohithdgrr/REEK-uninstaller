@@ -356,7 +356,7 @@ impl TuiApp {
                 let handle = self.runtime_handle.clone();
                 handle.spawn(async move {
                     let result = {
-                        let svc = service.lock().await;
+                        let mut svc = service.lock().await;
                         svc.analyze_leftovers(&app).await
                     };
                     let _ = tx.send(match result {
@@ -565,7 +565,7 @@ impl TuiApp {
         let handle = self.runtime_handle.clone();
         handle.spawn(async move {
             let result = {
-                let svc = service.lock().await;
+                let mut svc = service.lock().await;
                 svc.scan_all_apps().await
             };
             let _ = tx.send(match result {

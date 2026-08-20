@@ -66,7 +66,7 @@ async fn test_leftover_analyzer_manager() {
 #[tokio::test]
 async fn test_app_service() {
     let config = GreekConfig::default();
-    let service = GreekAppService::new(config).unwrap();
+    let mut service = GreekAppService::new(config).unwrap();
 
     let apps = service.scan_all_apps().await.unwrap();
     // Platform scanners may be registered; scan must simply complete without error.

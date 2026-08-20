@@ -49,6 +49,12 @@ pub enum GreekError {
 
     #[error("System error: {0}")]
     SystemError(String),
+
+    #[error("Safety violation: {0}")]
+    SafetyError(String),
+
+    #[error("Backup error: {0}")]
+    BackupError(String),
 }
 
 /// Result type alias for convenience

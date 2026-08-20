@@ -108,12 +108,10 @@ impl InstalledApp {
         }
     }
 
-    pub fn display_size(&self) -> String {
-        if let Some(size) = self.size_bytes {
-            humansize::format_size(size, humansize::BINARY)
-        } else {
-            "Unknown".to_string()
-        }
+    /// Returns a human-readable size string, or `None` if the size is unknown.
+    pub fn display_size(&self) -> Option<String> {
+        self.size_bytes
+            .map(|size| humansize::format_size(size, humansize::BINARY))
     }
 }
 

@@ -30,16 +30,28 @@ pub fn normalize_path(path: &Path) -> PathBuf {
     }
 }
 
+/// Delegate to the canonical implementation in `greek_common`.
 pub fn is_protected_path(path: &Path, protected_paths: &[String]) -> bool {
-    let path_str = path.to_string_lossy().to_lowercase();
+    greek_common::is_protected_path(path, protected_paths)
+}
 
-    for protected in protected_paths {
-        let protected_lower = protected.to_lowercase();
-        if path_str.starts_with(&protected_lower) {
+/// Check whether a registry key path is protected and must not be deleted.
+///
+/// Uses the same case-insensitive prefix-match strategy as `is_protected_path`
+/// but against `PROTECTED_REGISTRY_PATHS` (from `greek-common::constants`).
+#[cfg(target_os = "windows")]
+pub fn is_protected_registry_path(reg_path: &str) -> bool {
+    let lower = reg_path.to_lowercase();
+    for protected in greek_common::PROTECTED_REGISTRY_PATHS {
+        if lower.starts_with(&protected.to_lowercase()) {
             return true;
         }
     }
+    false
+}
 
+#[cfg(not(target_os = "windows"))]
+pub fn is_protected_registry_path(_reg_path: &str) -> bool {
     false
 }
 
@@ -78,6 +90,17 @@ pub fn delete_file(path: &Path) -> Result<()> {
 }
 
 pub fn delete_directory(path: &Path) -> Result<()> {
+    // Safety: refuse to delete protected system paths.
+    let protected = greek_common::PROTECTED_PATHS
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
+    if is_protected_path(path, &protected) {
+        return Err(GreekError::SafetyError(format!(
+            "Refusing to delete protected system path: {}",
+            path.display()
+        )));
+    }
     std::fs::remove_dir_all(path)?;
     Ok(())
 }
@@ -105,6 +128,10 @@ pub fn move_to_recycle_bin(path: &Path) -> Result<()> {
 ///
 /// On Windows this removes the subkey using the registry API. On other
 /// platforms this is a no-op returning Ok (there is no registry to delete).
+///
+/// **Security:** refuses to delete any key whose path is a prefix-match
+/// against `PROTECTED_REGISTRY_PATHS` to prevent accidental (or malicious)
+/// deletion of critical OS registry entries.
 pub fn delete_registry_key(path: &str) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
@@ -119,22 +146,26 @@ pub fn delete_registry_key(path: &str) -> Result<()> {
             ));
         }
 
-        // Parse hive prefix (e.g. "HKLM\" or "HKLM\\")
-        let (hive, remainder) = if let Some(rest) = path.strip_prefix("HKLM\\") {
+        // ── V002: block deletion of protected registry paths ──────────
+        if is_protected_registry_path(path) {
+            return Err(GreekError::SafetyError(format!(
+                "Refusing to delete protected registry key: <redacted>"
+            )));
+        }
+
+        // Parse hive prefix (e.g. "HKLM\\" or "HKLM\\\\")
+        let (hive, remainder) = if let Some(rest) = path.strip_prefix("HKLM\\\\") {
             (RegistryHive::Hklm, rest)
-        } else if let Some(rest) = path.strip_prefix("HKLM\\\\") {
+        } else if let Some(rest) = path.strip_prefix("HKLM\\\\\\\\") {
             (RegistryHive::Hklm, rest)
-        } else if let Some(rest) = path.strip_prefix("HKCU\\") {
-            (RegistryHive::Hkcu, rest)
         } else if let Some(rest) = path.strip_prefix("HKCU\\\\") {
             (RegistryHive::Hkcu, rest)
+        } else if let Some(rest) = path.strip_prefix("HKCU\\\\\\\\") {
+            (RegistryHive::Hkcu, rest)
         } else {
-            // Fall back to HKLM for registry keys without an explicit hive
-            // (keys created by the scanners always include a hive prefix).
-            return Err(GreekError::RegistryError(format!(
-                "Cannot determine registry hive from path: {}",
-                path
-            )));
+            return Err(GreekError::RegistryError(
+                "Cannot determine registry hive from path".to_string(),
+            ));
         };
 
         // The path is "Software\...\Uninstall\AppName"; the key to delete is
@@ -142,10 +173,9 @@ pub fn delete_registry_key(path: &str) -> Result<()> {
         let (parent_path, leaf) = match remainder.rfind('\\') {
             Some(idx) => (&remainder[..idx], &remainder[idx + 1..]),
             None => {
-                return Err(GreekError::RegistryError(format!(
-                    "Registry key path has no parent: {}",
-                    path
-                )));
+                return Err(GreekError::RegistryError(
+                    "Registry key path has no parent".to_string(),
+                ));
             }
         };
 
@@ -154,16 +184,16 @@ pub fn delete_registry_key(path: &str) -> Result<()> {
             RegistryHive::Hkcu => HKEY_CURRENT_USER,
         };
 
-        let parent = RegKey::predef(root).open_subkey(parent_path).map_err(|e| {
-            GreekError::RegistryError(format!("Failed to open {}: {}", parent_path, e))
+        let parent = RegKey::predef(root).open_subkey(parent_path).map_err(|_| {
+            GreekError::RegistryError("Failed to open registry parent key".to_string())
         })?;
 
         // Recursively delete the subkey.
-        parent.delete_subkey_all(leaf).map_err(|e| {
-            GreekError::RegistryError(format!("Failed to delete key {}: {}", path, e))
+        parent.delete_subkey_all(leaf).map_err(|_| {
+            GreekError::RegistryError("Failed to delete registry subkey".to_string())
         })?;
 
-        tracing::info!("Deleted registry key: {}", path);
+        tracing::info!("Deleted registry key: <redacted>");
         Ok(())
     }
 
@@ -223,6 +253,43 @@ mod tests {
             &protected
         ));
         assert!(!is_protected_path(Path::new("C:\\Users\\Test"), &protected));
+    }
+
+    #[test]
+    fn test_is_protected_path_case_insensitive() {
+        let protected = vec!["C:\\Windows".to_string()];
+
+        assert!(is_protected_path(
+            Path::new("c:\\windows\\system32"),
+            &protected
+        ));
+        assert!(is_protected_path(
+            Path::new("C:\\WINDOWS\\System32"),
+            &protected
+        ));
+    }
+
+    #[test]
+    fn test_delete_directory_nonexistent_returns_error() {
+        let result = delete_directory(Path::new("/nonexistent_path_reek_test"));
+        assert!(result.is_err());
+    }
+
+    #[cfg(target_os = "windows")] 
+    #[test]
+    fn test_is_protected_registry_path() {
+        assert!(is_protected_registry_path(
+            "HKLM\\SYSTEM\\CurrentControlSet\\Services\\MyService"
+        ));
+        assert!(is_protected_registry_path(
+            "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run"
+        ));
+        assert!(!is_protected_registry_path(
+            "HKLM\\SOFTWARE\\MyCompany\\MyApp"
+        ));
+        assert!(!is_protected_registry_path(
+            "HKCU\\SOFTWARE\\MyCompany\\MyApp"
+        ));
     }
 
     #[test]

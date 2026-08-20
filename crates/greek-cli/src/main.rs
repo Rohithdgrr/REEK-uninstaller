@@ -169,7 +169,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn cmd_list(service: GreekAppService, format: String, output: Option<String>) -> Result<()> {
+async fn cmd_list(mut service: GreekAppService, format: String, output: Option<String>) -> Result<()> {
     println!("Scanning for installed applications...");
 
     let apps = service.scan_all_apps().await?;
@@ -198,7 +198,7 @@ async fn cmd_list(service: GreekAppService, format: String, output: Option<Strin
     Ok(())
 }
 
-async fn cmd_search(service: GreekAppService, query: String, fuzzy: bool) -> Result<()> {
+async fn cmd_search(mut service: GreekAppService, query: String, fuzzy: bool) -> Result<()> {
     println!("Searching for: {}", query);
 
     let apps = service.scan_all_apps().await?;
@@ -225,7 +225,7 @@ async fn cmd_search(service: GreekAppService, query: String, fuzzy: bool) -> Res
 }
 
 async fn cmd_uninstall(
-    service: GreekAppService,
+    mut service: GreekAppService,
     app_name: String,
     silent: bool,
     force: bool,
@@ -236,10 +236,26 @@ async fn cmd_uninstall(
 
     let apps = service.scan_all_apps().await?;
 
-    let app = apps
+    // MED-2: use fuzzy matching (contains) like cmd_search, so partial
+    // names work.  If multiple apps match, prefer exact name match;
+    // otherwise pick the first close match.
+    let query_lower = app_name.to_lowercase();
+    let matching: Vec<_> = apps
         .into_iter()
-        .find(|a| a.name.to_lowercase() == app_name.to_lowercase())
-        .ok_or_else(|| color_eyre::eyre::eyre!("Application not found: {}", app_name))?;
+        .filter(|a| a.name.to_lowercase().contains(&query_lower))
+        .collect();
+
+    let app = if matching.len() == 1 {
+        matching.into_iter().next().unwrap()
+    } else {
+        // Try exact match first
+        matching
+            .iter()
+            .find(|a| a.name.to_lowercase() == query_lower)
+            .cloned()
+            .or_else(|| matching.into_iter().next())
+            .ok_or_else(|| color_eyre::eyre::eyre!("Application not found: {}", app_name))?
+    };
 
     println!("Found: {}", app.display_name());
     println!(
@@ -278,7 +294,7 @@ async fn cmd_uninstall(
 }
 
 async fn cmd_scan(
-    service: GreekAppService,
+    mut service: GreekAppService,
     leftovers: bool,
     all: bool,
     app_name: Option<String>,
@@ -323,7 +339,7 @@ async fn cmd_scan(
 }
 
 async fn cmd_clean(
-    service: GreekAppService,
+    mut service: GreekAppService,
     leftovers: bool,
     app_name: Option<String>,
     yes: bool,
@@ -375,13 +391,30 @@ async fn cmd_clean(
 async fn cmd_restore_point(_service: GreekAppService, description: String) -> Result<()> {
     println!("Creating system restore point: {}", description);
 
-    // This would use the restore point manager
-    println!("Restore point creation would be implemented here");
+    #[cfg(all(target_os = "windows", feature = "windows"))]
+    {
+        let manager = greek_windows::RestorePointManager::new();
+        match manager.create_restore_point(&description).await {
+            Ok(_) => {
+                println!("Restore point created successfully.");
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("Failed to create restore point: {}", e);
+                Err(e)
+            }
+        }
+    }
 
-    Ok(())
+    #[cfg(not(all(target_os = "windows", feature = "windows")))]
+    {
+        let _ = description;
+        println!("System Restore is not available on this platform.");
+        Ok(())
+    }
 }
 
-async fn cmd_info(service: GreekAppService, app_name: String) -> Result<()> {
+async fn cmd_info(mut service: GreekAppService, app_name: String) -> Result<()> {
     println!("Getting info for: {}", app_name);
 
     let apps = service.scan_all_apps().await?;
@@ -399,7 +432,7 @@ async fn cmd_info(service: GreekAppService, app_name: String) -> Result<()> {
     println!("Version: {}", app.version.as_deref().unwrap_or("Unknown"));
     println!("Install Date: {:?}", app.install_date);
     println!("Install Location: {:?}", app.install_location);
-    println!("Size: {}", app.display_size());
+    println!("Size: {}", app.display_size().unwrap_or_else(|| "Unknown".to_string()));
     println!("Source: {:?}", app.source);
     println!("System Component: {}", app.is_system_component);
 
@@ -427,9 +460,10 @@ fn cmd_completions(shell: Shell) -> Result<()> {
 }
 
 fn render_table(apps: &[greek_common::InstalledApp]) {
-    use comfy_table::{Cell, Color, Table};
+    use comfy_table::{presets::UTF8_FULL_CONDENSED, Cell, Color, Table};
 
     let mut table = Table::new();
+    table.load_preset(UTF8_FULL_CONDENSED);
     table.set_header(vec!["Name", "Publisher", "Version", "Size"]);
 
     for app in apps {
@@ -437,7 +471,7 @@ fn render_table(apps: &[greek_common::InstalledApp]) {
             Cell::new(&app.name).fg(Color::Green),
             Cell::new(app.publisher.as_deref().unwrap_or("Unknown")),
             Cell::new(app.version.as_deref().unwrap_or("Unknown")),
-            Cell::new(app.display_size()),
+            Cell::new(app.display_size().unwrap_or_else(|| "Unknown".to_string())),
         ]);
     }
 
@@ -452,7 +486,7 @@ fn render_csv(apps: &[greek_common::InstalledApp]) {
             app.name,
             app.publisher.as_deref().unwrap_or("Unknown"),
             app.version.as_deref().unwrap_or("Unknown"),
-            app.display_size(),
+            app.display_size().unwrap_or_else(|| "Unknown".to_string()),
             app.install_date
                 .map(|d| d.to_string())
                 .unwrap_or("Unknown".to_string())

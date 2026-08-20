@@ -234,17 +234,18 @@ impl FileSystemLeftoverAnalyzer {
     }
 
     fn determine_safety_level(&self, artifact: &LeftoverArtifact) -> SafetyLevel {
-        let path_str = artifact.path.to_string_lossy().to_lowercase();
-
-        // System directories are dangerous
-        if path_str.contains("windows") || path_str.contains("system32") {
+        // V008: use the canonical PROTECTED_PATHS list for system path detection
+        // instead of naive substring matching, which produces false positives
+        // (e.g. C:UsersAliceAppDataLocalMicrosoftWindows...).
+        let protected = greek_common::PROTECTED_PATHS
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        if crate::utils::is_protected_path(&artifact.path, &protected) {
             return SafetyLevel::Critical;
         }
 
-        // Program files are dangerous
-        if path_str.contains("program files") {
-            return SafetyLevel::Dangerous;
-        }
+        let path_str = artifact.path.to_string_lossy().to_lowercase();
 
         // AppData is generally safe for user apps
         if path_str.contains("appdata") {

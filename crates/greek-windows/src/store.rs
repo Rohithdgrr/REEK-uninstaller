@@ -198,6 +198,9 @@ impl WindowsStoreScanner {
     pub async fn remove_store_app(&self, package_family_name: &str) -> Result<()> {
         info!("Removing Windows Store app: {}", package_family_name);
 
+        // CR-10: escape single quotes to prevent PowerShell injection
+        let safe_name = package_family_name.replace('\'', "''");
+
         let ps_command = format!(
             r#"
             $package = Get-AppxPackage -PackageFamilyFilter '{}' -ErrorAction SilentlyContinue
@@ -208,7 +211,7 @@ impl WindowsStoreScanner {
                 Write-Output "Package not found"
             }}
             "#,
-            package_family_name
+            safe_name
         );
 
         let output = self.run_powershell(&ps_command).await?;

@@ -396,6 +396,18 @@ impl MacOsAppScanner {
     /// Remove an application
     pub async fn remove_app(&self, app: &InstalledApp) -> Result<()> {
         if let Some(install_location) = &app.install_location {
+            // Safety: refuse to remove protected system paths (CR-6)
+            let protected = greek_common::PROTECTED_PATHS
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>();
+            if greek_common::is_protected_path(install_location, &protected) {
+                return Err(GreekError::SafetyError(format!(
+                    "Refusing to remove protected path for app: {}",
+                    app.name
+                )));
+            }
+
             info!(
                 "Removing application: {:?} at {:?}",
                 app.name, install_location

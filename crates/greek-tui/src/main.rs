@@ -22,7 +22,7 @@ fn main() -> color_eyre::Result<()> {
 
     let config_manager = ConfigManager::new()?;
     let config = config_manager.load_config()?;
-    let service = GreekAppService::new(config.clone())?;
+    let mut service = GreekAppService::new(config.clone())?;
 
     // Setup terminal with mouse support
     enable_raw_mode()?;

@@ -114,17 +114,25 @@ impl RestorePointManager {
         Ok(deleted_count)
     }
 
-    /// Delete a specific restore point
-    async fn delete_restore_point(&self, _sequence_number: u64) -> Result<()> {
-        let ps_command = r#"
-            vssadmin delete shadows /for=C: /oldest /quiet
-            "#
-        .to_string();
-
-        // Note: Windows doesn't provide a direct way to delete specific restore points
-        // We can only delete oldest shadow copies
-        let _ = self.run_powershell(&ps_command).await?;
-        Ok(())
+    /// Delete a specific restore point.
+    ///
+    /// MED-4: The previous implementation used `vssadmin delete shadows /for=C: /oldest`
+    /// which deletes the **global** oldest shadow copy, not the specific restore point.
+    /// This could destroy unrelated recovery data.
+    ///
+    /// Windows does not provide a public API to delete individual restore points.
+    /// This function now returns an error to prevent accidental data loss.
+    /// Use `cleanup_old_restore_points()` for managed cleanup instead.
+    async fn delete_restore_point(&self, sequence_number: u64) -> Result<()> {
+        warn!(
+            "Cannot delete individual restore point {} — Windows does not \
+             support per-point deletion. Use cleanup_old_restore_points() for \
+             managed cleanup.",
+            sequence_number
+        );
+        Err(GreekError::SystemError(
+            "Individual restore point deletion is not supported on Windows".to_string(),
+        ))
     }
 
     /// Enable System Restore on C: drive
@@ -133,7 +141,7 @@ impl RestorePointManager {
             Enable-ComputerRestore -Drive "C:\\" -ErrorAction SilentlyContinue
         "#;
 
-        let _ = self.run_powershell(ps_command).await?;
+        self.run_powershell(ps_command).await?;
         Ok(())
     }
 

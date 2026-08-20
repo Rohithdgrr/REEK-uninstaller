@@ -323,22 +323,64 @@ impl LinuxPackageScanner {
             package_name, self.package_manager
         );
 
+        // MED-3: skip sudo when already root
+        #[cfg(unix)]
+        let is_root = unsafe { libc::geteuid() == 0 };
+        #[cfg(not(unix))]
+        let is_root = false;
+
         let result = match self.package_manager {
-            LinuxPackageManager::Apt | LinuxPackageManager::Dpkg => Command::new("sudo")
-                .args(["apt", "remove", "-y", package_name])
-                .output(),
-            LinuxPackageManager::Rpm => Command::new("sudo")
-                .args(["dnf", "remove", "-y", package_name])
-                .output(),
-            LinuxPackageManager::Pacman => Command::new("sudo")
-                .args(["pacman", "-R", "--noconfirm", package_name])
-                .output(),
+            LinuxPackageManager::Apt | LinuxPackageManager::Dpkg => {
+                let mut cmd = if is_root {
+                    let mut c = Command::new("apt");
+                    c.args(["remove", "-y", package_name]);
+                    c
+                } else {
+                    let mut c = Command::new("sudo");
+                    c.args(["apt", "remove", "-y", package_name]);
+                    c
+                };
+                cmd.output()
+            }
+            LinuxPackageManager::Rpm => {
+                let mut cmd = if is_root {
+                    let mut c = Command::new("dnf");
+                    c.args(["remove", "-y", package_name]);
+                    c
+                } else {
+                    let mut c = Command::new("sudo");
+                    c.args(["dnf", "remove", "-y", package_name]);
+                    c
+                };
+                cmd.output()
+            }
+            LinuxPackageManager::Pacman => {
+                let mut cmd = if is_root {
+                    let mut c = Command::new("pacman");
+                    c.args(["-R", "--noconfirm", package_name]);
+                    c
+                } else {
+                    let mut c = Command::new("sudo");
+                    c.args(["pacman", "-R", "--noconfirm", package_name]);
+                    c
+                };
+                cmd.output()
+            }
             LinuxPackageManager::Flatpak => Command::new("flatpak")
                 .args(["uninstall", "-y", package_name])
                 .output(),
-            LinuxPackageManager::Snap => Command::new("sudo")
-                .args(["snap", "remove", package_name])
-                .output(),
+            LinuxPackageManager::Snap => {
+                let mut cmd = if is_root {
+                    let mut c = Command::new("snap");
+                    c.args(["remove", package_name]);
+                    c
+                } else {
+                    let mut c = Command::new("sudo");
+                    c.args(["snap", "remove", package_name]);
+                    c
+                };
+                cmd.output()
+            }
         };
 
         match result {

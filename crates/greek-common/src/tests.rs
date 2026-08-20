@@ -47,7 +47,7 @@ mod model_tests {
         );
 
         app.size_bytes = Some(1024 * 1024);
-        assert_eq!(app.display_size(), "1 MiB");
+        assert_eq!(app.display_size(), Some("1 MiB".to_string()));
     }
 
     #[test]

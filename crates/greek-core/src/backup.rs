@@ -43,6 +43,10 @@ pub struct UninstallTransaction {
     pub app_name: String,
     pub timestamp: String,
     pub entries: Vec<BackupEntry>,
+    /// Cumulative size in bytes of all backed-up items.
+    /// Used to enforce the global backup size limit across all entries.
+    #[serde(default)]
+    pub total_size_bytes: u64,
 }
 
 impl UninstallTransaction {
@@ -55,6 +59,7 @@ impl UninstallTransaction {
             app_name: app_name.to_string(),
             timestamp: chrono::Utc::now().to_rfc3339(),
             entries: Vec::new(),
+            total_size_bytes: 0,
         };
         fs::create_dir_all(tx.root())?;
         Ok(tx)
@@ -66,7 +71,34 @@ impl UninstallTransaction {
     }
 
     /// Copy a file or directory into the backup, preserving what was deleted.
+    ///
+    /// Returns an error if the item exceeds the maximum backup size limit
+    /// (V005: enforce backup size limits to prevent disk exhaustion).
     pub fn add_file_or_dir(&mut self, original: &Path) -> Result<()> {
+        // V005 + CR-7: estimate size, enforce per-item and cumulative limits
+        let max_bytes = greek_common::MAX_BACKUP_SIZE_MB * 1024 * 1024;
+        let estimated = if original.is_dir() {
+            crate::utils::get_directory_size(original).unwrap_or(0)
+        } else {
+            crate::utils::get_file_size(original).unwrap_or(0)
+        };
+        if estimated > max_bytes {
+            return Err(GreekError::BackupError(format!(
+                "Item too large to back up ({} > {} MB limit)",
+                humansize::format_size(estimated, humansize::BINARY),
+                greek_common::MAX_BACKUP_SIZE_MB
+            )));
+        }
+        // CR-7: enforce cumulative size limit across all entries
+        if self.total_size_bytes + estimated > max_bytes {
+            return Err(GreekError::BackupError(format!(
+                "Cumulative backup size limit exceeded ({} + {} > {} MB)",
+                humansize::format_size(self.total_size_bytes, humansize::BINARY),
+                humansize::format_size(estimated, humansize::BINARY),
+                greek_common::MAX_BACKUP_SIZE_MB
+            )));
+        }
+
         let index = self.entries.len();
         let backup_path = self.root().join("items").join(format!("{:04}", index));
         fs::create_dir_all(backup_path.parent().unwrap_or(&self.root()))?;
@@ -82,6 +114,7 @@ impl UninstallTransaction {
             original: original.to_path_buf(),
             backup: backup_path,
         });
+        self.total_size_bytes += estimated;
         Ok(())
     }
 

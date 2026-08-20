@@ -209,19 +209,35 @@ impl StandardUninstallStrategy {
     }
 
     fn parse_command_string(&self, command: &str) -> Vec<String> {
-        // Split a Windows uninstall command line into program + args, honoring
-        // quoted paths while preserving backslashes literally.
-        // On Windows, uninstall strings look like:
+        // CR-8: Handle edge cases in Windows uninstall command strings.
+        //
+        // Uninstall strings can look like:
         //   "C:\Program Files\App\uninstall.exe" /S
         //   msiexec.exe /x {GUID} /qn
-        // `split_whitespace()` would break on the space inside the quoted path.
+        //   "C:\App\uninst.exe" /S /D="C:\My Path"
+        //
+        // The hand-rolled parser handles the common cases. For complex
+        // inputs (escaped quotes, trailing backslashes before quotes),
+        // we fall back to shell_words then split_whitespace.
         if command.contains('"') {
             let mut parts = Vec::new();
             let mut current = String::new();
             let mut in_quotes = false;
-            for c in command.chars() {
+            let chars: Vec<char> = command.chars().collect();
+            let len = chars.len();
+            let mut i = 0;
+            while i < len {
+                let c = chars[i];
                 match c {
-                    '"' => in_quotes = !in_quotes,
+                    '"' => {
+                        // CR-8: handle \" (escaped quote inside quoted string)
+                        if in_quotes && i + 1 < len && chars[i + 1] == '"' {
+                            current.push('"');
+                            i += 1; // skip the escaped quote
+                        } else {
+                            in_quotes = !in_quotes;
+                        }
+                    }
                     ' ' if !in_quotes => {
                         if !current.is_empty() {
                             parts.push(std::mem::take(&mut current));
@@ -229,6 +245,7 @@ impl StandardUninstallStrategy {
                     }
                     _ => current.push(c),
                 }
+                i += 1;
             }
             if !current.is_empty() {
                 parts.push(current);
@@ -451,6 +468,18 @@ impl UninstallStrategy for ForceRemoveStrategy {
 
         // Delete files
         if let Some(ref location) = app.install_location {
+            // V001: refuse to force-remove protected system paths
+            let protected = greek_common::PROTECTED_PATHS
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>();
+            if crate::utils::is_protected_path(location, &protected) {
+                return Err(GreekError::SafetyError(format!(
+                    "Refusing to force-remove protected path for app: {}",
+                    app.name
+                )));
+            }
+
             if location.exists() {
                 // Back up the file tree before deletion so it can be restored.
                 if let Err(e) = transaction.add_file_or_dir(location) {
@@ -656,5 +685,13 @@ mod tests {
         // Unquoted simple command
         let parts = strategy.parse_command_string("msiexec.exe /x {GUID} /qn");
         assert_eq!(parts, vec!["msiexec.exe", "/x", "{GUID}", "/qn"]);
+
+        // CR-8: command with quoted argument containing spaces
+        let parts = strategy
+            .parse_command_string(r#""C:\App\uninst.exe" /S /D="C:\My Path""#);
+        assert_eq!(
+            parts,
+            vec![r"C:\App\uninst.exe", "/S", r"/D=C:\My Path",]
+        );
     }
 }

@@ -44,24 +44,84 @@ pub const MAX_FPS: u32 = 60;
 pub const APPLICATION_NAME: &str = "reek-uninstaller";
 pub const APPLICATION_DISPLAY_NAME: &str = "REEK Ultimate Uninstaller";
 
-/// Protected paths that should never be deleted
+/// Protected paths that should never be deleted.
+///
+/// Force-removing any of these paths could brick the operating system or
+/// destroy user data. The list is intentionally broad: on Windows it covers
+/// the Windows directory tree, Program Files roots, user-profile roots, and
+/// critical system directories. On Unix it covers `/bin`, `/sbin`, `/lib`,
+/// `/usr`, `/etc`, `/var`, `/home`, and the root mount.
+///
+/// `is_protected_path()` in `utils.rs` performs a **case-insensitive
+/// prefix match** against this list, so `C:\Windows\System32\config` is
+/// correctly blocked even though only `C:\Windows` is listed.
 pub const PROTECTED_PATHS: &[&str] = &[
+    // ── Windows ──────────────────────────────────────────────────────
     r"C:\Windows",
     r"C:\Windows\System32",
+    r"C:\Windows\SysWOW64",
+    r"C:\Windows\WinSxS",
     r"C:\Program Files\WindowsApps",
     r"C:\Program Files",
     r"C:\Program Files (x86)",
-    r"C:\Windows\SysWOW64",
+    r"C:\ProgramData",
+    r"C:\Users",
+    r"C:\Recovery",
     r"\SystemRoot",
     r"\Windows\System32\drivers",
-    r"/System",
-    r"/usr",
-    r"/bin",
-    r"/sbin",
-    r"/lib",
-    r"/lib64",
-    r"/usr/bin",
-    r"/usr/sbin",
-    r"/usr/lib",
-    r"/usr/lib64",
+    // ── Unix / macOS ─────────────────────────────────────────────────
+    "/",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib64",
+    "/usr",
+    "/usr/bin",
+    "/usr/sbin",
+    "/usr/lib",
+    "/usr/lib64",
+    "/usr/local",
+    "/etc",
+    "/var",
+    "/home",
+    "/root",
+    "/opt",
+    "/System",
+    "/Library",
+    "/Applications",
+    "/Users",
 ];
+
+/// Protected Windows registry paths.
+///
+/// `delete_registry_key()` must refuse to touch any key whose full path
+/// (including hive prefix) starts with one of these strings. The list is
+/// intentionally broad — it covers critical OS hives, core Windows
+/// configuration, and service definitions.
+///
+/// Matching is **case-insensitive prefix match** (same strategy as file
+/// paths), so `HKLM\SYSTEM\CurrentControlSet\Services\CriticalService`
+/// is blocked by the `HKLM\SYSTEM` entry.
+#[cfg(target_os = "windows")]
+pub const PROTECTED_REGISTRY_PATHS: &[&str] = &[
+    r"HKLM\SYSTEM",
+    r"HKLM\SOFTWARE\Microsoft\Windows",
+    r"HKLM\SOFTWARE\Microsoft\Windows NT",
+    r"HKLM\SOFTWARE\Microsoft\Cryptography",
+    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
+    r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon",
+    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies",
+    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer",
+    r"HKLM\SYSTEM\CurrentControlSet\Services",
+    r"HKLM\SYSTEM\CurrentControlSet\Control",
+    r"HKCU\SOFTWARE\Microsoft\Windows",
+    r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+    r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
+    r"HKLM\SAM",
+    r"HKLM\SECURITY",
+];
+
+/// Placeholder for non-Windows builds so the constant is always in scope.
+#[cfg(not(target_os = "windows"))]
+pub const PROTECTED_REGISTRY_PATHS: &[&str] = &[];
