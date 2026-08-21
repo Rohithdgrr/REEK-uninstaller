@@ -62,7 +62,7 @@ hex = "0.4.3"
 
 # Configuration
 toml = { workspace = true }
-directories = "5.0.1"
+directories = "6.0.0"
 
 # Error handling
 thiserror = { workspace = true }
