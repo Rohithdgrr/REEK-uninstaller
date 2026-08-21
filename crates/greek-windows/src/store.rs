@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use greek_common::{
     clean_publisher_name, AppScanner, GreekError, InstallSource, InstalledApp, Result,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
 /// Windows Store/UWP app scanner
@@ -105,21 +105,97 @@ impl WindowsStoreScanner {
             app.size_bytes = (size > 0).then_some(size);
         }
 
-        // Icon: extract from the package logo if available (best effort)
-        let logo_candidates = ["Logo.png", "Square150x150Logo.png", "Square44x44Logo.png"];
+        // Icon: extract from the package logo if available (best effort).
+        // AppX packages store logos in subdirectories (e.g. Assets/) with
+        // scale variants like "Square150x150Logo.scale-100.png".
         let loc = PathBuf::from(install_location);
-        for logo in logo_candidates {
-            let candidate = loc.join(logo);
-            if candidate.exists() {
-                app.metadata.insert(
-                    "display_icon".into(),
-                    candidate.to_string_lossy().into_owned(),
-                );
-                break;
-            }
+        if let Some(logo) = Self::find_package_logo(&loc) {
+            app.metadata.insert("display_icon".into(), logo);
         }
 
         Some(app)
+    }
+
+    /// Search a package directory (up to two levels deep, e.g. into an
+    /// `Assets/` folder) for the best package logo PNG.
+    ///
+    /// Prefers Square150x150 over Square44x44 over any other `*Logo*` asset;
+    /// within a family prefers plain / `scale-100` variants, then other scale
+    /// factors, then ascending `targetsize-N` values.
+    fn find_package_logo(dir: &Path) -> Option<String> {
+        const MAX_DEPTH: usize = 2;
+
+        fn rank(name_lower: &str) -> Option<(u8, u8, u32)> {
+            let stem = name_lower.strip_suffix(".png")?;
+            if !stem.contains("logo") {
+                return None;
+            }
+            let family = if stem.starts_with("square150x150logo") {
+                0u8
+            } else if stem.starts_with("square44x44logo") {
+                1
+            } else {
+                2
+            };
+            let (kind, size): (u8, u32) =
+                if let Some(rest) = stem.split_once("targetsize-").map(|(_, r)| r) {
+                    let n = rest
+                        .split(['.', '_'])
+                        .next()
+                        .and_then(|v| v.parse::<u32>().ok())
+                        .unwrap_or(u32::MAX);
+                    (2, n)
+                } else if let Some(n) = stem
+                    .split_once("scale-")
+                    .map(|(_, r)| r)
+                    .and_then(|r| r.split(['.', '_']).next())
+                    .and_then(|v| v.parse::<u32>().ok())
+                {
+                    if n == 100 {
+                        (0, 0)
+                    } else {
+                        (1, n)
+                    }
+                } else {
+                    (0, 0)
+                };
+            Some((family, kind, size))
+        }
+
+        let mut best: Option<((u8, u8, u32), PathBuf)> = None;
+        let mut stack: Vec<(PathBuf, usize)> = vec![(dir.to_path_buf(), 0)];
+        while let Some((dir, depth)) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(ft) = entry.file_type() else {
+                    continue;
+                };
+                if ft.is_dir() {
+                    if depth < MAX_DEPTH {
+                        stack.push((path, depth + 1));
+                    }
+                    continue;
+                }
+                if !ft.is_file() {
+                    continue;
+                }
+                let rank_key = entry
+                    .file_name()
+                    .to_str()
+                    .map(|n| n.to_ascii_lowercase())
+                    .and_then(|n| rank(&n));
+                let Some(rank_key) = rank_key else {
+                    continue;
+                };
+                if best.as_ref().is_none_or(|(r, _)| rank_key < *r) {
+                    best = Some((rank_key, path));
+                }
+            }
+        }
+        best.map(|(_, p)| p.to_string_lossy().into_owned())
     }
 
     /// Get the size of an installed package
@@ -339,5 +415,33 @@ mod tests {
         // This test would only pass on Windows with installed Store apps
         let result = scanner.scan_store_apps().await;
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_find_package_logo_ranking() {
+        let root = std::env::temp_dir().join(format!("reek_logo_test_{}", std::process::id()));
+        let assets = root.join("Assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(assets.join("Square44x44Logo.targetsize-16.png"), b"x").unwrap();
+        std::fs::write(assets.join("Square150x150Logo.scale-125.png"), b"x").unwrap();
+        std::fs::write(root.join("Logo.png"), b"x").unwrap();
+        std::fs::write(assets.join("NotALogoCandidate.txt"), b"x").unwrap();
+
+        let got = WindowsStoreScanner::find_package_logo(&root).unwrap();
+        assert!(got.ends_with("Square150x150Logo.scale-125.png"));
+
+        std::fs::write(assets.join("Square150x150Logo.scale-100.png"), b"x").unwrap();
+        let got = WindowsStoreScanner::find_package_logo(&root).unwrap();
+        assert!(got.ends_with("Square150x150Logo.scale-100.png"));
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn test_find_package_logo_missing_dir() {
+        assert!(
+            WindowsStoreScanner::find_package_logo(Path::new(r"C:\reek_no_such_package_dir"))
+                .is_none()
+        );
     }
 }

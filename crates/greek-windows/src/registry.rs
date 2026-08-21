@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use winreg::enums::*;
 use winreg::RegKey;
 
+use crate::icon::poor_icon_source;
+
 const UNINSTALL_PATH_NATIVE: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall";
 const UNINSTALL_PATH_WOW64: &str =
     r"Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall";
@@ -200,7 +202,9 @@ impl WindowsRegistryScanner {
         Some(app)
     }
 
-    /// Find the first .exe in a directory (1 level deep).
+    /// Find the first plausible .exe in a directory (1 level deep).
+    /// Generic installer binaries (unins*, setup*, msiexec, ...) are skipped:
+    /// they carry no useful icon and are never the app's running process.
     fn find_exe_in_dir(dir: &PathBuf) -> Option<String> {
         use std::fs;
         let entries = fs::read_dir(dir).ok()?;
@@ -210,6 +214,7 @@ impl WindowsRegistryScanner {
                 e.path()
                     .extension()
                     .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+                    && !poor_icon_source(&e.path())
             })
             .collect();
         exes.sort_by_key(|a| a.file_name());

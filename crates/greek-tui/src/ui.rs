@@ -251,7 +251,9 @@ fn render_app_list(f: &mut Frame, area: Rect, app: &TuiApp) {
             let name = &app_item.name;
             let ver = app_item.version.as_deref().unwrap_or("");
             let pub_str = app_item.publisher.as_deref().unwrap_or("");
-            let size = app_item.display_size().unwrap_or_else(|| "Unknown".to_string());
+            let size = app_item
+                .display_size()
+                .unwrap_or_else(|| "Unknown".to_string());
 
             let name_trunc = truncate(name, col_widths[2] as usize - 1);
             let pub_trunc = truncate(pub_str, col_widths[4] as usize - 1);
@@ -268,14 +270,15 @@ fn render_app_list(f: &mut Frame, area: Rect, app: &TuiApp) {
                     .bg(bg),
             ));
 
-            // Real icon: 8 half-block pixels (8x2 of the actual icon), else colored letter
+            // Real icon: 8 half-block pixels from the icon's middle band so a
+            // recognizable slice of the logo shows; else colored letter
             if let Some(px) = &px {
                 for x in 0..8 {
                     spans.push(Span::styled(
                         "▀",
                         Style::default()
-                            .fg(app_icon_pixel_color(px, x, 0))
-                            .bg(app_icon_pixel_color(px, x, 1)),
+                            .fg(app_icon_pixel_color(px, x, 3))
+                            .bg(app_icon_pixel_color(px, x, 4)),
                     ));
                 }
                 spans.push(Span::raw(" "));
@@ -432,7 +435,13 @@ fn render_details(f: &mut Frame, area: Rect, app: &TuiApp) {
             &label,
             &val,
         );
-        detail_row(&mut lines, "Size", &a.display_size().unwrap_or_else(|| "Unknown".to_string()), &label, &val);
+        detail_row(
+            &mut lines,
+            "Size",
+            &a.display_size().unwrap_or_else(|| "Unknown".to_string()),
+            &label,
+            &val,
+        );
         detail_row(
             &mut lines,
             "Date",

@@ -53,8 +53,9 @@ powershell_script = "1.0.4"
 # Privilege escalation
 runas = "1.2.0"
 
-# Image processing (icon dominant color extraction)
-image = { version = "0.25", default-features = false, features = ["png"] }
+# Image processing (icon dominant color extraction; direct decode of
+# PNG/ICO/JPEG/BMP icon sources like AppX logos and DisplayIcon values)
+image = { version = "0.25", default-features = false, features = ["png", "ico", "bmp", "jpeg"] }
 
 # Native NT API
 ntapi = "0.4.1"
