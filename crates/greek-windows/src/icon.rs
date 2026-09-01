@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 /// CreateProcess command-line limit (long scripts silently fail otherwise).
 const PS_SCRIPT_BUDGET: usize = 24_000;
 /// Fixed overhead (bytes) of the generated PowerShell script boilerplate.
-const PS_SCRIPT_OVERHEAD: usize = 512;
+/// High-quality extraction embeds a C# helper (~2.8k chars) so budget must account for it.
+const PS_SCRIPT_OVERHEAD: usize = 3500;
 /// Kill a hung powershell.exe instead of blocking the scan forever.
 const PS_TIMEOUT: Duration = Duration::from_secs(45);
 /// A cached PNG smaller than this is treated as truncated/corrupt.
@@ -49,14 +50,21 @@ impl IconExtractor {
     }
 
     /// Find a reasonable icon source path (.exe/.ico/.dll/.png) for an app.
+    /// Covers DisplayIcon, exe_path, install_location directory search (2 levels deep),
+    /// and .ico fallback so that every installed app gets a real icon.
     pub fn find_exe_path(app: &InstalledApp) -> Option<PathBuf> {
-        // 1. DisplayIcon registry value (handles "path,index" and quoted paths)
+        // 1. DisplayIcon registry value (handles "path,index" and quoted paths) - most reliable.
         if let Some(icon) = app.metadata.get("display_icon") {
             if let Some(p) = Self::parse_icon_path(icon) {
                 return Some(p);
             }
+            // Try expanding env vars if raw path didn't exist (e.g. %ProgramFiles%\..)
+            let expanded = expand_env_vars(icon);
+            if let Some(p) = Self::parse_icon_path(&expanded) {
+                return Some(p);
+            }
         }
-        // 2. Install location is itself an exe
+        // 2. Install location is itself an exe file.
         if let Some(loc) = &app.install_location {
             if loc
                 .extension()
@@ -66,16 +74,129 @@ impl IconExtractor {
             {
                 return Some(loc.clone());
             }
+            // 2b. Install location is a directory: search for best exe inside (2 levels deep).
+            // This covers Chrome (chrome.exe), Brave (brave.exe), Docker (Docker Desktop.exe), etc.
+            if loc.is_dir() {
+                if let Some(best) = Self::find_best_exe_in_dir(&app.name, loc) {
+                    return Some(best);
+                }
+                // Fallback: look for any .ico directly (Store logos, etc.)
+                if let Some(ico) = Self::find_best_ico_in_dir(loc) {
+                    return Some(ico);
+                }
+            }
         }
         // 3. Exe path derived from the uninstall string. Generic installer
-        // binaries (MsiExec, unins*, setup*) carry no useful icon.
+        // binaries (MsiExec, unins*, setup*) carry no useful icon - filtered.
         if let Some(p) = app.metadata.get("exe_path") {
             let path = PathBuf::from(p);
             if path.exists() && !poor_icon_source(&path) {
                 return Some(path);
             }
         }
+        // 4. Last resort: accept even poor icon sources (unins*.exe) rather than no icon.
+        if let Some(p) = app.metadata.get("exe_path") {
+            let path = PathBuf::from(p);
+            if path.exists() {
+                return Some(path);
+            }
+        }
+        // 5. Last resort: scan install_location dir without poor filter (if we skipped earlier due to poor)
+        if let Some(loc) = &app.install_location {
+            if loc.is_dir() {
+                if let Some(any_exe) = Self::find_any_exe_in_dir(loc) {
+                    return Some(any_exe);
+                }
+                // Final fallback: use the directory itself (yields generic folder icon rather than initials)
+                return Some(loc.clone());
+            }
+        }
         None
+    }
+
+    /// Search a directory up to 2 levels deep for the best .exe to use as icon.
+    /// Prefers exes whose name contains the app name, then largest file.
+    fn find_best_exe_in_dir(app_name: &str, dir: &Path) -> Option<PathBuf> {
+        let candidates = Self::collect_exes(dir, 2, true);
+        if candidates.is_empty() {
+            return None;
+        }
+        Self::pick_best_exe(app_name, &candidates)
+    }
+    fn find_any_exe_in_dir(dir: &Path) -> Option<PathBuf> {
+        let candidates = Self::collect_exes(dir, 2, false);
+        if candidates.is_empty() {
+            return None;
+        }
+        // Any exe at all, pick largest
+        candidates.into_iter().max_by_key(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
+    }
+    fn find_best_ico_in_dir(dir: &Path) -> Option<PathBuf> {
+        let mut stack: Vec<(PathBuf, usize)> = vec![(dir.to_path_buf(), 0)];
+        let mut best: Option<PathBuf> = None;
+        while let Some((d, depth)) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            for entry in rd.flatten() {
+                let Ok(ft) = entry.file_type() else { continue };
+                let path = entry.path();
+                if ft.is_dir() {
+                    if depth < 2 {
+                        stack.push((path, depth + 1));
+                    }
+                } else if ft.is_file() {
+                    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ico") || e.eq_ignore_ascii_case("png")) {
+                        // Prefer .ico over .png for shell extraction
+                        if best.is_none() || path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ico")) {
+                            best = Some(path.clone());
+                            if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ico")) {
+                                // keep searching but ico is best; still allow
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        best
+    }
+    fn collect_exes(dir: &Path, max_depth: usize, filter_poor: bool) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let mut stack: Vec<(PathBuf, usize)> = vec![(dir.to_path_buf(), 0)];
+        while let Some((d, depth)) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            for entry in rd.flatten() {
+                let Ok(ft) = entry.file_type() else { continue };
+                let path = entry.path();
+                if ft.is_dir() {
+                    if depth < max_depth {
+                        stack.push((path, depth + 1));
+                    }
+                } else if ft.is_file() {
+                    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe")) {
+                        if filter_poor && poor_icon_source(&path) {
+                            continue;
+                        }
+                        out.push(path);
+                    }
+                }
+            }
+        }
+        out
+    }
+    fn pick_best_exe(app_name: &str, candidates: &[PathBuf]) -> Option<PathBuf> {
+        let norm_app = app_name.to_lowercase().replace(' ', "").replace('-', "");
+        // Score: 0 = stem contains app or app contains stem, 1 = otherwise. Lower is better, then larger file wins.
+        let mut scored: Vec<(u8, u64, PathBuf)> = candidates
+            .iter()
+            .map(|p| {
+                let stem = p.file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+                let norm_stem = stem.replace(' ', "").replace('-', "").replace('_', "");
+                let score = if norm_stem.contains(&norm_app) || norm_app.contains(&norm_stem) { 0u8 } else { 1u8 };
+                let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+                (score, size, p.clone())
+            })
+            .collect();
+        scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+        scored.into_iter().next().map(|(_, _, p)| p)
     }
 
     /// Parse a DisplayIcon-style value into an existing path. Registry values
@@ -103,7 +224,9 @@ impl IconExtractor {
     fn cache_file(&self, exe: &Path) -> PathBuf {
         let mut h = DefaultHasher::new();
         exe.to_string_lossy().hash(&mut h);
-        self.cache_dir.join(format!("{:016x}.png", h.finish()))
+        // _hq suffix forces re-extraction at 256px after the high-quality upgrade;
+        // old 32px caches (without suffix) are ignored so icons become crisp.
+        self.cache_dir.join(format!("{:016x}_hq.png", h.finish()))
     }
 
     /// A cache entry is only trusted when it exists and has a plausible size
@@ -287,6 +410,42 @@ impl Default for IconExtractor {
     }
 }
 
+fn expand_env_vars(s: &str) -> String {
+    // Expand %VAR% segments using environment variables (e.g. %ProgramFiles%).
+    let mut out = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            let mut var = String::new();
+            while let Some(&nc) = chars.peek() {
+                if nc == '%' {
+                    chars.next();
+                    break;
+                }
+                var.push(nc);
+                chars.next();
+            }
+            if !var.is_empty() {
+                if let Ok(val) = std::env::var(&var) {
+                    out.push_str(&val);
+                    continue;
+                }
+                // also try upper case
+                if let Ok(val) = std::env::var(var.to_uppercase()) {
+                    out.push_str(&val);
+                    continue;
+                }
+            }
+            out.push('%');
+            out.push_str(&var);
+            out.push('%');
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Heuristic: executables that never carry the app's real icon because they
 /// are generic installer/bootstrap binaries.
 pub(crate) fn poor_icon_source(path: &Path) -> bool {
@@ -412,9 +571,44 @@ fn build_ps_script(chunk: &[&IconJob]) -> String {
         })
         .collect();
     let mut sb = String::from("Add-Type -AssemblyName System.Drawing\r\n");
+    // High-quality path: try SHGetImageList Jumbo (256x256) -> ExtraLarge (48x48) before falling back to ExtractAssociatedIcon (32x32).
+    // Guard against re-definition when multiple batches run in same PowerShell process (would error "type already exists").
+    sb.push_str(r#"if (-not ([System.Management.Automation.PSTypeName]'HiResIcon').Type) { Add-Type @"
+using System;
+using System.Drawing;
+using System.Runtime.InteropServices;
+public class HiResIcon {
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Auto)] public struct SHFILEINFO { public IntPtr hIcon; public int iIcon; public uint dwAttributes; [MarshalAs(UnmanagedType.ByValTStr, SizeConst=260)] public string szDisplayName; [MarshalAs(UnmanagedType.ByValTStr, SizeConst=80)] public string szTypeName; }
+  [DllImport("shell32.dll", CharSet=CharSet.Auto)] public static extern IntPtr SHGetFileInfo(string pszPath,uint dwFileAttributes, ref SHFILEINFO psfi,uint cbSizeFileInfo,uint uFlags);
+  [DllImport("shell32.dll")] public static extern int SHGetImageList(int iImageList, ref Guid riid, ref IntPtr ppv);
+  [ComImport, Guid("46EB5926-582E-4017-9FDF-E8998DAA0950"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] public interface IImageList { [PreserveSig] int GetIcon(int i,int flags, ref IntPtr pIcon); }
+  const uint SHGFI_SYSICONINDEX=0x4000;
+  const int SHIL_JUMBO=4, SHIL_EXTRALARGE=2, ILD_TRANSPARENT=1;
+  public static Icon GetJumbo(string path){
+    SHFILEINFO sfi=new SHFILEINFO();
+    SHGetFileInfo(path,0,ref sfi,(uint)Marshal.SizeOf(typeof(SHFILEINFO)),SHGFI_SYSICONINDEX);
+    Guid iid=new Guid("46EB5926-582E-4017-9FDF-E8998DAA0950");
+    IntPtr iml=IntPtr.Zero;
+    if(SHGetImageList(SHIL_JUMBO, ref iid, ref iml)==0){
+      IImageList list=(IImageList)Marshal.GetObjectForIUnknown(iml);
+      IntPtr hIcon=IntPtr.Zero; list.GetIcon(sfi.iIcon, ILD_TRANSPARENT, ref hIcon);
+      if(hIcon!=IntPtr.Zero) return Icon.FromHandle(hIcon);
+    }
+    if(SHGetImageList(SHIL_EXTRALARGE, ref iid, ref iml)==0){
+      IImageList list=(IImageList)Marshal.GetObjectForIUnknown(iml);
+      IntPtr hIcon=IntPtr.Zero; list.GetIcon(sfi.iIcon, ILD_TRANSPARENT, ref hIcon);
+      if(hIcon!=IntPtr.Zero) return Icon.FromHandle(hIcon);
+    }
+    return null;
+  }
+}
+"@
+}
+"#,
+    );
     sb.push_str(&format!("$jobs = @({})\r\n", pairs.join(",\r\n")));
     sb.push_str(
-        "foreach ($j in $jobs) { try { $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($j[0]); if ($icon) { $b = $icon.ToBitmap(); $b.Save($j[1], [System.Drawing.Imaging.ImageFormat]::Png); $b.Dispose(); $icon.Dispose() } } catch {} }\r\nWrite-Output 'DONE'\r\n",
+        "foreach ($j in $jobs) { try { $ico=[HiResIcon]::GetJumbo($j[0]); if(-not $ico){ $ico=[System.Drawing.Icon]::ExtractAssociatedIcon($j[0]) } if($ico){ $bmp=$ico.ToBitmap(); $bmp.Save($j[1],[System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose(); $ico.Dispose() } } catch {} }\r\nWrite-Output 'DONE'\r\n",
     );
     sb
 }

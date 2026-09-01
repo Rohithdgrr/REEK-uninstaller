@@ -11,6 +11,8 @@ export type AppEntry = {
   install_date?: string | null;
   install_location?: string | null;
   source_label: string;
+  icon_path?: string | null;
+  icon_color?: string | null;
 };
 
 export type AppDetails = {
@@ -28,6 +30,8 @@ export type AppDetails = {
   is_system: boolean;
   registry_keys: string[];
   metadata: Record<string, string>;
+  icon_path?: string | null;
+  icon_color?: string | null;
 };
 
 export type UninstallPayload = { ids: string[]; force: boolean; silent?: boolean };
@@ -70,6 +74,18 @@ export type LeftoverDto = {
   safety: string;
 };
 
+export type AppResourceDto = {
+  is_running: boolean;
+  pid?: number | null;
+  process_count: number;
+  cpu: number;
+  memory_bytes: number;
+  memory_display?: string | null;
+  gpu: number;
+  vram_bytes: number;
+  exe_path?: string | null;
+};
+
 export async function scanApplications(): Promise<AppEntry[]> {
   return invoke<AppEntry[]>("scan_applications");
 }
@@ -88,6 +104,18 @@ export async function analyzeLeftovers(id: string): Promise<LeftoverDto[]> {
 
 export async function uninstallApplications(payload: UninstallPayload): Promise<UninstallResultDto[]> {
   return invoke<UninstallResultDto[]>("uninstall_applications", { payload });
+}
+
+export async function getAppIcon(id: string): Promise<string | null> {
+  return invoke<string | null>("get_app_icon", { id });
+}
+
+export async function getAppResources(): Promise<Record<string, AppResourceDto>> {
+  return invoke<Record<string, AppResourceDto>>("get_app_resources");
+}
+
+export async function getAppResource(id: string): Promise<AppResourceDto | null> {
+  return invoke<AppResourceDto | null>("get_app_resource", { id });
 }
 
 export function onUninstallProgress(cb: (e: UninstallProgressEvent) => void): Promise<UnlistenFn> {

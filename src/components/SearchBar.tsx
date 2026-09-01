@@ -10,20 +10,22 @@ export function SearchBar({
   count: number;
 }) {
   return (
-    <div className="flex items-center gap-3">
-      <div className="relative flex-1 max-w-xl">
-        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden />
+    <div className="h-[56px] flex items-center">
+      <div className="relative flex-1 max-w-[560px] mx-auto w-full">
+        <Search size={16} className="absolute left-5 top-1/2 -translate-y-1/2 text-[#6B6661] pointer-events-none" aria-hidden />
         <input
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          placeholder="Search applications…"
+          placeholder="Search applications..."
           aria-label="Search applications"
-          className="w-full rounded-xl border border-slate-200 bg-white pl-9 pr-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 transition"
+          className="w-full rounded-full border border-[rgba(225,29,72,0.08)] bg-[#141414] pl-11 pr-[88px] py-2 text-[14px] font-normal text-[#F5F0EB] placeholder:text-[#6B6661] focus:outline-none focus:border-[rgba(225,29,72,0.25)] focus:ring-[2px] focus:ring-[rgba(225,29,72,0.25)] transition"
+          style={{ paddingTop: '8px', paddingBottom: '8px' }}
         />
+        <span className="absolute right-5 top-1/2 -translate-y-1/2 text-[14px] font-medium pointer-events-none">
+          <span className="text-[#C9A84C]">{count}</span>
+          <span className="text-[#A8A39E]"> apps</span>
+        </span>
       </div>
-      <span className="inline-flex items-center rounded-full bg-white border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 shadow-sm whitespace-nowrap">
-        Found {count} applications
-      </span>
     </div>
   );
 }

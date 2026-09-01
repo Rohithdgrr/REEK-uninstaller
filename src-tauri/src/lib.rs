@@ -1,3 +1,4 @@
+use base64::Engine;
 use greek_common::models::{InstalledApp, InstallSource, RegistryHive};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -19,6 +20,8 @@ pub struct AppEntry {
     pub install_date: Option<String>,
     pub install_location: Option<String>,
     pub source_label: String,
+    pub icon_path: Option<String>,
+    pub icon_color: Option<String>,
 }
 
 impl From<InstalledApp> for AppEntry {
@@ -43,8 +46,10 @@ impl From<InstalledApp> for AppEntry {
             size_bytes: a.size_bytes,
             size_display: a.display_size(),
             install_date: a.install_date.map(|d| d.to_string()),
-            install_location: a.install_location.map(|p| p.to_string_lossy().to_string()),
+            install_location: a.install_location.as_ref().map(|p| p.to_string_lossy().to_string()),
             source_label,
+            icon_path: a.icon_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+            icon_color: a.metadata.get("icon_color").cloned(),
         }
     }
 }
@@ -65,6 +70,8 @@ pub struct AppDetails {
     pub is_system: bool,
     pub registry_keys: Vec<String>,
     pub metadata: HashMap<String, String>,
+    pub icon_path: Option<String>,
+    pub icon_color: Option<String>,
 }
 
 impl From<InstalledApp> for AppDetails {
@@ -96,6 +103,8 @@ impl From<InstalledApp> for AppDetails {
             is_system: a.is_system_component,
             registry_keys: a.registry_keys.iter().map(|k| k.path.clone()).collect(),
             metadata: a.metadata.clone(),
+            icon_path: a.icon_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+            icon_color: a.metadata.get("icon_color").cloned(),
         }
     }
 }
@@ -193,6 +202,19 @@ pub struct LeftoverDto {
     pub size_display: Option<String>,
     pub confidence: f32,
     pub safety: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppResourceDto {
+    pub is_running: bool,
+    pub pid: Option<u32>,
+    pub process_count: usize,
+    pub cpu: f32,
+    pub memory_bytes: u64,
+    pub memory_display: Option<String>,
+    pub gpu: f32,
+    pub vram_bytes: u64,
+    pub exe_path: Option<String>,
 }
 
 // ---------- Helpers ----------
@@ -362,12 +384,189 @@ async fn uninstall_applications(
     Ok(results)
 }
 
+#[tauri::command]
+async fn get_app_icon(registry: State<'_, AppRegistry>, id: String) -> Result<Option<String>, String> {
+    let path_opt = {
+        let map = registry.0.lock().map_err(|e| format!("lock {e}"))?;
+        map.get(&id).and_then(|a| a.icon_path.clone())
+    };
+    let Some(path) = path_opt else {
+        return Ok(None);
+    };
+    // Ensure file still exists
+    if !path.exists() {
+        return Ok(None);
+    }
+    // Offload blocking read + base64 to thread pool
+    let p = path.clone();
+    let bytes = tokio::task::spawn_blocking(move || std::fs::read(&p))
+        .await
+        .map_err(|e| format!("join {e}"))?
+        .map_err(|e| format!("read icon {e}"))?;
+    // Limit to reasonable size (e.g. 2MB) to avoid huge payloads
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err("icon too large".into());
+    }
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(Some(b64))
+}
+
+fn resource_for_app(app: &InstalledApp, stats: &greek_common::SystemStats) -> Option<AppResourceDto> {
+    let mut total_cpu = 0f32;
+    let mut total_mem = 0u64;
+    let mut total_gpu = 0f32;
+    let mut total_vram = 0u64;
+    let mut pids: Vec<u32> = Vec::new();
+    let mut exe_example: Option<String> = None;
+
+    let app_name_lower = app.name.to_lowercase();
+    let loc_lower = app.install_location.as_ref().map(|p| p.to_string_lossy().to_lowercase().to_string());
+    let exe_meta_lower = app.metadata.get("exe_path").map(|s| s.trim_matches('"').to_lowercase());
+    let icon_path_lower = app
+        .metadata
+        .get("display_icon")
+        .and_then(|s| {
+            let t = s.trim();
+            let stripped = match t.rfind(',') {
+                Some(pos) if {
+                    let suffix = t[pos + 1..].trim();
+                    let digits = suffix.strip_prefix('-').unwrap_or(suffix);
+                    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+                } => t[..pos].trim(),
+                _ => t,
+            };
+            let clean = stripped.trim_matches('"').trim().to_lowercase();
+            if clean.is_empty() { None } else { Some(clean) }
+        });
+
+    for proc in stats.processes.values() {
+        let exe_lower = proc.exe_path.to_lowercase();
+        let name_lower = proc.name.to_lowercase();
+        let mut matched = false;
+
+        if let Some(ref exe) = exe_meta_lower {
+            if &exe_lower == exe {
+                matched = true;
+            }
+        }
+        if !matched {
+            if let Some(ref loc) = loc_lower {
+                // Directory prefix match (avoid matching C:\Program Files vs C:\Program Files (x86) false positive: require trailing slash or exact)
+                if exe_lower.starts_with(loc) {
+                    matched = true;
+                } else if loc.ends_with(".exe") && &exe_lower == loc {
+                    matched = true;
+                }
+            }
+        }
+        if !matched {
+            if let Some(ref icon) = icon_path_lower {
+                if &exe_lower == icon {
+                    matched = true;
+                }
+            }
+        }
+        if !matched {
+            // Name heuristic: need at least 4 chars to avoid "git" vs "digit" false positives
+            if app_name_lower.len() >= 4 && name_lower.len() >= 4 {
+                let app_norm = app_name_lower.replace(' ', "");
+                let proc_norm = name_lower.trim_end_matches(".exe").replace(' ', "");
+                if proc_norm.contains(&app_norm) || app_norm.contains(&proc_norm) {
+                    matched = true;
+                }
+            }
+        }
+        if matched {
+            total_cpu += proc.cpu_usage;
+            total_mem += proc.memory_bytes;
+            total_gpu += proc.gpu_usage_pct;
+            total_vram += proc.vram_bytes;
+            pids.push(proc.pid);
+            if exe_example.is_none() {
+                exe_example = Some(proc.exe_path.clone());
+            }
+        }
+    }
+
+    if pids.is_empty() {
+        return None;
+    }
+    pids.sort_unstable();
+    pids.dedup();
+    Some(AppResourceDto {
+        is_running: true,
+        pid: pids.first().copied(),
+        process_count: pids.len(),
+        cpu: total_cpu,
+        memory_bytes: total_mem,
+        memory_display: Some(humansize::format_size(total_mem, humansize::BINARY)),
+        gpu: total_gpu,
+        vram_bytes: total_vram,
+        exe_path: exe_example,
+    })
+}
+
+#[tauri::command]
+async fn get_app_resources(registry: State<'_, AppRegistry>) -> Result<HashMap<String, AppResourceDto>, String> {
+    // Snapshot apps without holding lock during blocking collection
+    let apps: Vec<InstalledApp> = {
+        let map = registry.0.lock().map_err(|e| format!("lock {e}"))?;
+        map.values().cloned().collect()
+    };
+    if apps.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let stats = tokio::task::spawn_blocking(|| {
+        #[cfg(target_os = "windows")]
+        {
+            let mut c = greek_windows::SystemStatsCollector::new();
+            c.collect()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            greek_common::SystemStats::default()
+        }
+    })
+    .await
+    .map_err(|e| format!("join {e}"))?;
+
+    let mut out = HashMap::new();
+    for app in apps {
+        if let Some(res) = resource_for_app(&app, &stats) {
+            out.insert(app.id.to_string(), res);
+        }
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+async fn get_app_resource(registry: State<'_, AppRegistry>, id: String) -> Result<Option<AppResourceDto>, String> {
+    let app = {
+        let map = registry.0.lock().map_err(|e| format!("lock {e}"))?;
+        map.get(&id).cloned().ok_or_else(|| format!("App {id} not found"))?
+    };
+    let stats = tokio::task::spawn_blocking(|| {
+        #[cfg(target_os = "windows")]
+        {
+            let mut c = greek_windows::SystemStatsCollector::new();
+            c.collect()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            greek_common::SystemStats::default()
+        }
+    })
+    .await
+    .map_err(|e| format!("join {e}"))?;
+    Ok(resource_for_app(&app, &stats))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppRegistry(Mutex::new(HashMap::new())))
-        .invoke_handler(tauri::generate_handler![scan_applications, get_app_details, get_system_stats, analyze_leftovers, uninstall_applications])
+        .invoke_handler(tauri::generate_handler![scan_applications, get_app_details, get_system_stats, analyze_leftovers, uninstall_applications, get_app_icon, get_app_resources, get_app_resource])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

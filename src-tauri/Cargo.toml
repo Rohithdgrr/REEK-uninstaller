@@ -21,3 +21,4 @@ greek-common = { path = "../crates/greek-common" }
 greek-core = { path = "../crates/greek-core" }
 greek-windows = { path = "../crates/greek-windows" }
 humansize = "2.1.3"
+base64 = "0.22"

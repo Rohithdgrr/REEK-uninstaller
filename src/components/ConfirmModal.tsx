@@ -1,5 +1,4 @@
-import { AlertTriangle, ChevronDown } from "lucide-react";
-import { useState } from "react";
+import { Zap } from "lucide-react";
 import type { AppEntry } from "../lib/tauri";
 
 export function ConfirmModal({
@@ -15,61 +14,68 @@ export function ConfirmModal({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  const [open, setOpen] = useState(false);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-slate-900/30 backdrop-blur-sm" onClick={onCancel} aria-hidden />
-      <div role="dialog" aria-modal="true" aria-label="Confirm uninstall" className="relative w-full max-w-lg bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
-        <div className="px-6 pt-6">
-          <div className="w-10 h-10 rounded-full bg-red-50 border border-red-100 flex items-center justify-center text-red-600">
-            <AlertTriangle size={20} />
+      {/* Overlay rgba(10,10,10,0.85) + blur */}
+      <div className="absolute inset-0 overlay-enter bg-[rgba(10,10,10,0.85)] backdrop-blur-[16px]" onClick={onCancel} aria-hidden />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Confirm uninstall"
+        className="relative w-full max-w-[560px] modal-enter bg-[#1A1A1A] rounded-[16px] border border-[rgba(225,29,72,0.2)] shadow-[0_20px_80px_rgba(0,0,0,0.8),0_0_60px_rgba(225,29,72,0.05)] overflow-hidden"
+      >
+        <div className="px-7 pt-7 pb-6">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-full bg-[rgba(225,29,72,0.12)] border border-[rgba(225,29,72,0.2)] flex items-center justify-center text-[#E11D48]">
+              <Zap size={16} />
+            </div>
+            <h2 className="font-display font-semibold text-[20px] text-[#F5F0EB]">Confirm Uninstall</h2>
           </div>
-          <h2 className="mt-4 text-lg font-semibold text-slate-900">Are you sure you want to uninstall these applications?</h2>
-          <p className="mt-1 text-sm text-slate-600">This action will run each app&apos;s uninstaller. You can force removal if the uninstaller fails.</p>
+          <div className="mt-4 h-px bg-[rgba(225,29,72,0.12)]" />
+          <p className="mt-4 font-display italic text-[14px] text-[#A8A39E] leading-relaxed">
+            This action is irreversible. Mahakali destroys to create anew.
+          </p>
 
-          <button
-            onClick={() => setOpen(!open)}
-            className="mt-4 w-full flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-white transition"
-          >
-            <span>{apps.length} applications selected</span>
-            <ChevronDown size={16} className={`transition ${open ? "rotate-180" : ""}`} />
-          </button>
-          {open && (
-            <ul className="mt-2 max-h-40 overflow-auto rounded-xl border border-slate-200 divide-y divide-slate-100 bg-white">
+          <div className="mt-5 rounded-[8px] bg-[#141414] border border-[rgba(225,29,72,0.06)] p-3 max-h-[160px] overflow-auto">
+            <ul className="space-y-2">
               {apps.map((a) => (
-                <li key={a.id} className="px-4 py-2 text-sm text-slate-700 flex justify-between">
-                  <span className="truncate">{a.name}</span>
-                  <span className="text-slate-400 ml-2">{a.version ?? ""}</span>
+                <li key={a.id} className="flex items-center gap-2 text-[14px] text-[#F5F0EB]">
+                  <span className="w-1 h-1 rounded-full bg-[#E11D48] shrink-0" />
+                  <span className="truncate flex-1">{a.name}</span>
+                  <span className="text-[13px] text-[#6B6661] shrink-0">{a.size_display ?? ""}</span>
                 </li>
               ))}
             </ul>
-          )}
+          </div>
 
-          <label className="mt-4 flex items-center gap-2 text-sm text-slate-700">
-            <input
-              type="checkbox"
-              checked={force}
-              onChange={(e) => onForceChange(e.target.checked)}
-              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-600"
-            />
-            Force removal if uninstaller fails (also deletes files/registry)
-          </label>
-          <label className="mt-2 flex items-center gap-2 text-sm text-slate-700">
-            <input
-              type="checkbox"
-              disabled
-              checked={false}
-              className="h-4 w-4 rounded border-slate-300 text-blue-600"
-            />
-            Silent uninstall (no prompts) <span className="text-xs text-slate-400">— coming via UninstallOptions.silent</span>
+          {/* Force toggle — gold text, custom switch */}
+          <label className="mt-5 flex items-center gap-3 cursor-pointer select-none">
+            <button
+              role="switch"
+              aria-checked={force}
+              onClick={() => onForceChange(!force)}
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors duration-200 shrink-0 ${force ? "bg-[#E11D48]" : "bg-[#2A2A2A]"}`}
+            >
+              <span
+                className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform duration-200 ${force ? "translate-x-5" : "translate-x-1"}`}
+              />
+            </button>
+            <span className="text-[13px] font-normal text-[#C9A84C]">Force removal if uninstaller fails</span>
           </label>
         </div>
-        <div className="mt-6 flex justify-end gap-3 bg-slate-50 border-t border-slate-200 px-6 py-4">
-          <button onClick={onCancel} className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition">
+
+        <div className="flex items-center justify-end gap-3 px-7 py-4 bg-[#141414] border-t border-[rgba(225,29,72,0.08)]">
+          <button
+            onClick={onCancel}
+            className="rounded-full border border-[rgba(255,255,255,0.08)] bg-transparent px-6 py-2 text-[14px] font-medium text-[#A8A39E] hover:text-[#F5F0EB] hover:border-[rgba(255,255,255,0.15)] transition-colors"
+          >
             Cancel
           </button>
-          <button onClick={onConfirm} className="rounded-xl bg-red-600 px-5 py-2 text-sm font-semibold text-white hover:bg-red-700 shadow-sm transition">
-            Confirm Uninstall
+          <button
+            onClick={onConfirm}
+            className="inline-flex items-center gap-1.5 rounded-full bg-[#E11D48] px-6 py-2 text-[14px] font-semibold text-white shadow-[0_0_40px_rgba(225,29,72,0.3)] hover:bg-[#FF3B6A] hover:scale-[1.02] transition-all"
+          >
+            <Zap size={14} /> Uninstall
           </button>
         </div>
       </div>

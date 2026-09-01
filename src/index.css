@@ -2,7 +2,156 @@
 @tailwind components;
 @tailwind utilities;
 
-* { font-family: Inter, system-ui, sans-serif; }
+/* Mahakali × Resend — Gallery-grade Void Theme */
+:root {
+  --void: #0A0A0A;
+  --surface: #141414;
+  --surface-elevated: #1A1A1A;
+  --surface-card: #0a0a0c;
+  --console: #080808;
+  --mahakali: #E11D48;
+  --mahakali-hover: #FF3B6A;
+  --gold: #C9A84C;
+  --ink: #F5F0EB;
+  --body: #A8A39E;
+  --muted: #6B6661;
+  --check-border: #4A4540;
+  --hairline-red: rgba(225,29,72,0.06);
+  --hairline-red-strong: rgba(225,29,72,0.12);
+  --border-red-subtle: rgba(225,29,72,0.08);
+  --border-red-pill: rgba(225,29,72,0.15);
+}
+
+* { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+html, body, #root { background: var(--void); color: var(--ink); min-height: 100vh; }
+::selection { background: rgba(225,29,72,0.35); }
+
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 9999px; }
-::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+::-webkit-scrollbar-track { background: var(--void); }
+::-webkit-scrollbar-thumb { background: rgba(225,29,72,0.18); border-radius: 9999px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(225,29,72,0.32); }
+
+.font-display { font-family: 'Playfair Display', serif; }
+.font-mono { font-family: 'JetBrains Mono', monospace; }
+
+/* Atmospheric void glow — blueprint: radial at 70% 60% rgba(225,29,72,0.06) */
+.void-glow {
+  background: radial-gradient(900px 600px at 70% 60%, rgba(225,29,72,0.06) 0%, rgba(225,29,72,0.03) 35%, transparent 70%);
+}
+.glow-red-top {
+  background: radial-gradient(700px 400px at 50% 0%, rgba(225,29,72,0.08) 0%, transparent 70%);
+}
+
+/* Custom checkbox — 16px × 16px radius 4 */
+.custom-checkbox {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 1px solid var(--check-border);
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 150ms ease;
+  flex-shrink: 0;
+}
+.custom-checkbox.checked {
+  background: var(--mahakali);
+  border-color: var(--mahakali);
+  color: white;
+}
+.custom-checkbox.indeterminate {
+  background: var(--mahakali);
+  border-color: var(--mahakali);
+}
+
+/* Breathing pulse for primary button when active */
+@keyframes breathe {
+  0%, 100% { box-shadow: 0 0 40px rgba(225,29,72,0.3); }
+  50% { box-shadow: 0 0 55px rgba(225,29,72,0.45), 0 0 20px rgba(225,29,72,0.2); }
+}
+.btn-breathe {
+  animation: breathe 2s ease-in-out infinite;
+}
+
+/* Row slide-up for log entries */
+@keyframes slideUpFade {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.log-enter { animation: slideUpFade 150ms ease forwards; }
+
+/* Stagger for summary cards */
+@keyframes staggerUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.stagger-1 { animation: staggerUp 300ms ease-out 0ms both; }
+.stagger-2 { animation: staggerUp 300ms ease-out 50ms both; }
+.stagger-3 { animation: staggerUp 300ms ease-out 100ms both; }
+
+/* Modal scale */
+@keyframes modalIn {
+  from { opacity: 0; transform: scale(0.92); }
+  to { opacity: 1; transform: scale(1); }
+}
+.modal-enter { animation: modalIn 250ms ease-out forwards; }
+@keyframes overlayIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.overlay-enter { animation: overlayIn 300ms ease-out forwards; }
+
+/* Mahakali scanning — rich ritual visuals */
+@keyframes scan-sweep {
+  0% { transform: translateY(0); opacity: 0; }
+  8% { opacity: 1; }
+  92% { opacity: 1; }
+  100% { transform: translateY(420px); opacity: 0; }
+}
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes pulse-ring {
+  0%, 100% { transform: scale(0.96); opacity: 0.55; }
+  50% { transform: scale(1.04); opacity: 0.85; }
+}
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+@keyframes eye-pulse {
+  0%, 100% { opacity: 0.85; filter: brightness(1) drop-shadow(0 0 6px rgba(225,29,72,0.9)); }
+  50% { opacity: 1; filter: brightness(1.5) drop-shadow(0 0 14px rgba(255,59,106,1)); }
+}
+@keyframes bracket-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+@keyframes orbit {
+  from { transform: rotate(0deg) translateX(190px) rotate(0deg); }
+  to { transform: rotate(360deg) translateX(190px) rotate(-360deg); }
+}
+
+/* Mahakali IS scanning — eyes blink & project */
+@keyframes blink-lid {
+  0%, 88%, 100% { transform: scaleY(0); }
+  90%, 95% { transform: scaleY(1); }
+}
+@keyframes eye-beam {
+  0%, 25%, 100% { opacity: 0; transform: scaleX(0.7); }
+  35% { opacity: 1; }
+  55% { opacity: 0.85; transform: scaleX(1); }
+  70% { opacity: 0; transform: scaleX(1.08); }
+}
+@keyframes pupil-drift {
+  0%, 85%, 100% { transform: translateX(0); }
+  90% { transform: translateX(1px); }
+  93% { transform: translateX(-1px); }
+}
+@keyframes bindi-flare {
+  0%, 85%, 100% { opacity: 0.9; filter: brightness(1) drop-shadow(0 0 8px rgba(225,29,72,0.9)); transform: scale(1); }
+  90% { opacity: 0.2; filter: brightness(0.6); transform: scale(0.95); }
+  92% { opacity: 1; filter: brightness(1.8) drop-shadow(0 0 16px rgba(255,59,106,1)); transform: scale(1.08); }
+}

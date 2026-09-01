@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { AppEntry, UninstallProgressEvent, UninstallResultDto } from "../lib/tauri";
 
 export type View = "splash" | "dashboard" | "progress" | "results";
-export type SortKey = "name" | "date" | "size";
+export type SortKey = "name" | "date" | "size" | "resources";
 export type SortDir = "asc" | "desc";
 
 type State = {
@@ -44,8 +44,8 @@ export const useAppStore = create<State & Actions>((set) => ({
   apps: [],
   loading: true,
   search: "",
-  sortKey: "name",
-  sortDir: "asc",
+  sortKey: "size",
+  sortDir: "desc",
   selected: new Set<string>(),
   force: false,
   showConfirm: false,
@@ -61,7 +61,9 @@ export const useAppStore = create<State & Actions>((set) => ({
   setSort: (key) =>
     set((s) => {
       if (s.sortKey === key) return { sortDir: s.sortDir === "asc" ? "desc" : "asc" };
-      return { sortKey: key, sortDir: "asc" };
+      // size/resources default to heaviest-first (desc), others asc
+      const defDir: SortDir = key === "size" || key === "resources" ? "desc" : "asc";
+      return { sortKey: key, sortDir: defDir };
     }),
   toggleSelect: (id) =>
     set((s) => {
