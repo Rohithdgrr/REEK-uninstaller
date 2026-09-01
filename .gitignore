@@ -1,6 +1,13 @@
 # Rust build artifacts
 /target/
+src-tauri/target/
 **/*.rs.bk
+
+# Node / Frontend
+node_modules/
+dist/
+.env
+.env.local
 
 # NOTE: Cargo.lock is intentionally NOT ignored. REEK ships binaries, so the
 # lockfile must be committed to guarantee reproducible builds and to pin the
