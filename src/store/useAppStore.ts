@@ -19,6 +19,8 @@ type State = {
   logs: string[];
   results: UninstallResultDto[];
   error: string | null;
+  lastSeq: number;
+  heartbeatLost: boolean;
 };
 
 type Actions = {
@@ -34,8 +36,10 @@ type Actions = {
   setShowConfirm: (b: boolean) => void;
   pushLog: (s: string) => void;
   setProgress: (p: UninstallProgressEvent | null) => void;
+  setProgressSequenced: (p: UninstallProgressEvent) => void;
   setResults: (r: UninstallResultDto[]) => void;
   setError: (e: string | null) => void;
+  setHeartbeatLost: (b: boolean) => void;
   resetLogs: () => void;
 };
 
@@ -53,6 +57,8 @@ export const useAppStore = create<State & Actions>((set) => ({
   logs: [],
   results: [],
   error: null,
+  lastSeq: 0,
+  heartbeatLost: false,
 
   setView: (view) => set({ view }),
   setApps: (apps) => set({ apps }),
@@ -88,9 +94,20 @@ export const useAppStore = create<State & Actions>((set) => ({
   clearSelection: () => set({ selected: new Set() }),
   setForce: (force) => set({ force }),
   setShowConfirm: (showConfirm) => set({ showConfirm }),
-  pushLog: (line) => set((s) => ({ logs: [...s.logs, line] })),
+  // Bounded log: cap at 1000 entries to avoid memory leak (§1.3)
+  pushLog: (line) => set((s) => {
+    const next = [...s.logs, line];
+    if (next.length > 1000) next.splice(0, next.length - 1000);
+    return { logs: next };
+  }),
   setProgress: (progress) => set({ progress }),
+  // Sequence-aware: ignore out-of-order events (§2.1)
+  setProgressSequenced: (evt) => set((s) => {
+    if (evt.seq <= s.lastSeq) return {};
+    return { progress: evt, lastSeq: evt.seq, heartbeatLost: false };
+  }),
   setResults: (results) => set({ results }),
   setError: (error) => set({ error }),
-  resetLogs: () => set({ logs: [], progress: null, results: [] }),
+  setHeartbeatLost: (heartbeatLost) => set({ heartbeatLost }),
+  resetLogs: () => set({ logs: [], progress: null, results: [], lastSeq: 0, heartbeatLost: false }),
 }));

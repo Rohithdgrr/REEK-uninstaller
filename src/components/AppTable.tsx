@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, memo, useCallback } from "react";
 import { ArrowUpDown, Package, Check, Minus, ChevronRight, Sparkles } from "lucide-react";
 import type { AppEntry, AppResourceDto } from "../lib/tauri";
 import { getAppIcon, getAppResources } from "../lib/tauri";
@@ -24,13 +24,18 @@ export function AppTable({ apps, onDetails }: { apps: AppEntry[]; onDetails?: (i
     return () => { alive = false; clearInterval(id); };
   }, [apps.length]);
 
+  const handleSelect = useCallback((id: string) => toggleSelect(id), [toggleSelect]);
+  const handleSelectAll = useCallback(() => toggleSelectAll(visibleIds), [toggleSelectAll, visibleIds]);
+
   return (
-    <div className="overflow-hidden rounded-[16px] border border-[rgba(225,29,72,0.08)] bg-[#0A0A0A]">
+    <div className="overflow-hidden rounded-[16px] border border-[rgba(225,29,72,0.08)] bg-[#0A0A0A]" role="table" aria-label="Installed applications">
       {/* Simple, tactile header */}
-      <div className="sticky top-0 z-10 bg-[#141414]/90 backdrop-blur-[8px] border-b border-[rgba(225,29,72,0.06)] px-3 md:px-4 py-3 flex items-center gap-3">
+      <div className="sticky top-0 z-10 bg-[#141414]/90 backdrop-blur-[8px] border-b border-[rgba(225,29,72,0.06)] px-3 md:px-4 py-3 flex items-center gap-3" role="row">
         <button
-          aria-label="Select all"
-          onClick={() => toggleSelectAll(visibleIds)}
+          aria-label={`Select all ${visibleIds.length} applications`}
+          aria-checked={allChecked ? "true" : indeterminate ? "mixed" : "false"}
+          role="checkbox"
+          onClick={handleSelectAll}
           className={`custom-checkbox ${allChecked ? "checked" : indeterminate ? "indeterminate" : ""} shrink-0`}
         >
           {allChecked ? <Check size={10} strokeWidth={3} /> : indeterminate ? <Minus size={10} strokeWidth={3} /> : null}
@@ -50,8 +55,8 @@ export function AppTable({ apps, onDetails }: { apps: AppEntry[]; onDetails?: (i
         </div>
       </div>
 
-      {/* List */}
-      <div className="max-h-[54vh] overflow-auto divide-y divide-[rgba(225,29,72,0.04)]">
+      {/* List — virtualization hint: for >200 apps, consider react-virtual */}
+      <div className="max-h-[54vh] overflow-auto divide-y divide-[rgba(225,29,72,0.04)]" role="rowgroup">
         {apps.length === 0 ? (
           <div className="px-6 py-16 text-center">
             <div className="mx-auto w-14 h-14 rounded-[16px] bg-[#141414] border border-[rgba(225,29,72,0.08)] flex items-center justify-center text-[#6B6661] shadow-[0_0_24px_rgba(225,29,72,0.06)]">
@@ -61,56 +66,17 @@ export function AppTable({ apps, onDetails }: { apps: AppEntry[]; onDetails?: (i
             <p className="text-[12px] text-[#6B6661] mt-1">Try another search or hit Scan to refresh.</p>
           </div>
         ) : (
-          apps.map((app, idx) => {
-            const isSelected = selected.has(app.id);
-            const res = resources[app.id];
-            const running = res?.is_running;
-            return (
-              <div
-                key={app.id}
-                onClick={() => onDetails?.(app.id)}
-                className={`group relative flex items-center gap-3 md:gap-4 px-3 md:px-4 py-3.5 cursor-pointer transition-all duration-150
-                  ${isSelected ? "bg-[rgba(225,29,72,0.07)]" : "bg-transparent hover:bg-[#141414]"}
-                `}
-                style={{ animation: `slideUpFade 180ms ease ${Math.min(idx, 8) * 22}ms both` }}
-                title="Click for details"
-              >
-                {/* left accent */}
-                <span className={`absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-7 rounded-full transition-all ${isSelected ? "bg-[#E11D48] opacity-100" : "bg-transparent group-hover:bg-[rgba(225,29,72,0.25)] opacity-0 group-hover:opacity-100"}`} />
-
-                <button
-                  aria-label={`Select ${app.name}`}
-                  onClick={(e) => { e.stopPropagation(); toggleSelect(app.id); }}
-                  className={`custom-checkbox shrink-0 ${isSelected ? "checked" : ""}`}
-                >
-                  {isSelected && <Check size={10} strokeWidth={3} />}
-                </button>
-
-                <AppIcon app={app} running={running} selected={isSelected} />
-
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <p className="text-[14px] font-medium leading-none text-[#F5F0EB] truncate">{app.name}</p>
-                    {running && <span className="inline-flex items-center gap-1 text-[10px] font-medium tracking-[0.08em] uppercase bg-[rgba(17,255,153,0.12)] border border-[rgba(17,255,153,0.22)] text-[#11FF99] rounded-full px-1.5 py-0.5 shrink-0"><span className="w-1 h-1 rounded-full bg-[#11FF99] animate-pulse" /> Live</span>}
-                    {isSelected && <Sparkles size={12} className="text-[#E11D48] opacity-60 shrink-0 hidden sm:inline" />}
-                  </div>
-                  <p className="text-[12px] text-[#6B6661] truncate mt-1">{app.publisher ?? app.source_label}</p>
-                </div>
-
-                {/* meta pills — simple, not crowded */}
-                <div className="hidden md:flex items-center gap-2 shrink-0">
-                  <span className="hidden lg:inline-flex max-w-[140px] truncate rounded-full bg-[#141414] border border-[rgba(225,29,72,0.08)] px-2.5 py-1 text-[11px] font-medium text-[#A8A39E]">{app.version ?? "—"}</span>
-                  <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-medium ${pickSizeStyle(app.size_display)}`}>{app.size_display ?? "—"}</span>
-                  <span className="hidden xl:inline-flex text-[11px] text-[#6B6661] w-[88px] justify-end">{formatDate(app.install_date)}</span>
-                </div>
-
-                {/* mobile size badge */}
-                <span className={`md:hidden shrink-0 rounded-full border px-2 py-1 text-[11px] font-medium ${pickSizeStyle(app.size_display)}`}>{app.size_display ? app.size_display.split(" ")[0] : "—"}</span>
-
-                <ChevronRight size={14} className="text-[#4A4540] group-hover:text-[#A8A39E] group-hover:translate-x-0.5 transition-all shrink-0" />
-              </div>
-            );
-          })
+          apps.map((app, idx) => (
+            <AppRow
+              key={app.id}
+              app={app}
+              idx={idx}
+              isSelected={selected.has(app.id)}
+              res={resources[app.id]}
+              onDetails={onDetails}
+              onToggle={handleSelect}
+            />
+          ))
         )}
       </div>
 
@@ -119,6 +85,71 @@ export function AppTable({ apps, onDetails }: { apps: AppEntry[]; onDetails?: (i
     </div>
   );
 }
+
+const AppRow = memo(function AppRow({
+  app,
+  idx,
+  isSelected,
+  res,
+  onDetails,
+  onToggle,
+}: {
+  app: AppEntry;
+  idx: number;
+  isSelected: boolean;
+  res?: AppResourceDto;
+  onDetails?: (id: string) => void;
+  onToggle: (id: string) => void;
+}) {
+  const running = res?.is_running;
+  return (
+    <div
+      role="row"
+      aria-selected={isSelected}
+      aria-label={`${app.name} by ${app.publisher ?? app.source_label}, version ${app.version ?? "unknown"}, size ${app.size_display ?? "unknown"}`}
+      onClick={() => onDetails?.(app.id)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onDetails?.(app.id);
+        }
+      }}
+      tabIndex={0}
+      className={`group relative flex items-center gap-3 md:gap-4 px-3 md:px-4 py-3.5 cursor-pointer transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#E11D48]/40
+        ${isSelected ? "bg-[rgba(225,29,72,0.07)]" : "bg-transparent hover:bg-[#141414]"}
+      `}
+      style={{ animation: `slideUpFade 180ms ease ${Math.min(idx, 8) * 22}ms both` }}
+      title="Click for details — press Enter to open"
+    >
+      <span className={`absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-7 rounded-full transition-all ${isSelected ? "bg-[#E11D48] opacity-100" : "bg-transparent group-hover:bg-[rgba(225,29,72,0.25)] opacity-0 group-hover:opacity-100"}`} />
+      <button
+        aria-label={`Select ${app.name}`}
+        aria-checked={isSelected}
+        role="checkbox"
+        onClick={(e) => { e.stopPropagation(); onToggle(app.id); }}
+        className={`custom-checkbox shrink-0 ${isSelected ? "checked" : ""}`}
+      >
+        {isSelected && <Check size={10} strokeWidth={3} />}
+      </button>
+      <AppIcon app={app} running={running} selected={isSelected} />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <p className="text-[14px] font-medium leading-none text-[#F5F0EB] truncate">{app.name}</p>
+          {running && <span className="inline-flex items-center gap-1 text-[10px] font-medium tracking-[0.08em] uppercase bg-[rgba(17,255,153,0.12)] border border-[rgba(17,255,153,0.22)] text-[#11FF99] rounded-full px-1.5 py-0.5 shrink-0"><span className="w-1 h-1 rounded-full bg-[#11FF99] animate-pulse" /> Live</span>}
+          {isSelected && <Sparkles size={12} className="text-[#E11D48] opacity-60 shrink-0 hidden sm:inline" />}
+        </div>
+        <p className="text-[12px] text-[#6B6661] truncate mt-1">{app.publisher ?? app.source_label}</p>
+      </div>
+      <div className="hidden md:flex items-center gap-2 shrink-0">
+        <span className="hidden lg:inline-flex max-w-[140px] truncate rounded-full bg-[#141414] border border-[rgba(225,29,72,0.08)] px-2.5 py-1 text-[11px] font-medium text-[#A8A39E]">{app.version ?? "—"}</span>
+        <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-medium ${pickSizeStyle(app.size_display)}`}>{app.size_display ?? "—"}</span>
+        <span className="hidden xl:inline-flex text-[11px] text-[#6B6661] w-[88px] justify-end">{formatDate(app.install_date)}</span>
+      </div>
+      <span className={`md:hidden shrink-0 rounded-full border px-2 py-1 text-[11px] font-medium ${pickSizeStyle(app.size_display)}`}>{app.size_display ? app.size_display.split(" ")[0] : "—"}</span>
+      <ChevronRight size={14} className="text-[#4A4540] group-hover:text-[#A8A39E] group-hover:translate-x-0.5 transition-all shrink-0" />
+    </div>
+  );
+});
 
 function SortPill({ label, active, dir, onClick, className = "", hint }: { label: string; active: boolean; dir: string; onClick: () => void; className?: string; hint?: string }) {
   return (

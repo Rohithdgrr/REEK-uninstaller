@@ -109,7 +109,61 @@ impl From<InstalledApp> for AppDetails {
     }
 }
 
+// ---------- Validation helpers (Audit 2 §1.1) ----------
+const MAX_UNINSTALL_IDS: usize = 100;
+const MAX_PATHS_PER_REQUEST: usize = 500;
+const MAX_PATH_LEN: usize = 4096;
+
+fn validate_uuid_str(id: &str) -> Result<uuid::Uuid, String> {
+    let t = id.trim();
+    if t.is_empty() || t.len() > 64 {
+        return Err(format!("Invalid id length: {}", t.len()));
+    }
+    uuid::Uuid::parse_str(t).map_err(|_| format!("Invalid app id (not a UUID): {t}"))
+}
+
+fn validate_ids(ids: &[String]) -> Result<(), String> {
+    if ids.is_empty() {
+        return Err("No applications selected".into());
+    }
+    if ids.len() > MAX_UNINSTALL_IDS {
+        return Err(format!("Too many applications (max {MAX_UNINSTALL_IDS})"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for id in ids {
+        validate_uuid_str(id)?;
+        if !seen.insert(id) {
+            return Err(format!("Duplicate id: {id}"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_single_id(id: &str) -> Result<(), String> {
+    validate_uuid_str(id).map(|_| ())
+}
+
+fn validate_paths(paths: &[String]) -> Result<(), String> {
+    if paths.is_empty() {
+        return Err("No paths provided".into());
+    }
+    if paths.len() > MAX_PATHS_PER_REQUEST {
+        return Err(format!("Too many paths (max {MAX_PATHS_PER_REQUEST})"));
+    }
+    for p in paths {
+        let t = p.trim();
+        if t.is_empty() || t.len() > MAX_PATH_LEN {
+            return Err(format!("Invalid path length: {}", t.len()));
+        }
+        if t.contains('\0') {
+            return Err("Path contains null byte".into());
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UninstallPayload {
     pub ids: Vec<String>,
     pub force: bool,
@@ -118,6 +172,7 @@ pub struct UninstallPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UninstallProgressPayload {
+    pub seq: u64,
     pub current: usize,
     pub total: usize,
     pub app_name: String,
@@ -319,6 +374,7 @@ async fn scan_applications(registry: State<'_, AppRegistry>) -> Result<Vec<AppEn
 
 #[tauri::command]
 async fn get_app_details(registry: State<'_, AppRegistry>, id: String) -> Result<AppDetails, String> {
+    validate_single_id(&id)?;
     let map = registry.0.lock().map_err(|e| format!("lock {e}"))?;
     let app = map.get(&id).ok_or_else(|| format!("App {id} not found. Re-scan."))?;
     Ok(AppDetails::from(app.clone()))
@@ -346,6 +402,7 @@ async fn get_system_stats() -> Result<SystemStatsDto, String> {
 
 #[tauri::command]
 async fn analyze_leftovers(registry: State<'_, AppRegistry>, id: String) -> Result<Vec<LeftoverDto>, String> {
+    validate_single_id(&id)?;
     let app = {
         let map = registry.0.lock().map_err(|e| format!("lock {e}"))?;
         map.get(&id).cloned().ok_or_else(|| format!("App {id} not found"))?
@@ -376,8 +433,8 @@ async fn uninstall_applications(
     registry: State<'_, AppRegistry>,
     payload: UninstallPayload,
 ) -> Result<Vec<UninstallResultDto>, String> {
+    validate_ids(&payload.ids)?;
     let total = payload.ids.len();
-    if total == 0 { return Err("No applications selected".into()); }
     let targets: Vec<InstalledApp> = {
         let map = registry.0.lock().map_err(|e| format!("lock {e}"))?;
         let mut out = Vec::new();
@@ -399,12 +456,24 @@ async fn uninstall_applications(
     let config = GreekConfig::default();
     let svc = GreekAppService::new(config).map_err(|e| e.to_string())?;
     let mut results = Vec::new();
+    let mut seq: u64 = 0;
+    // Rate limiting: ensure at most 100 events/sec (10ms min interval). Since uninstall is sequential
+    // this naturally throttles, but we enforce it explicitly for safety (§1.3).
+    let mut last_emit = std::time::Instant::now() - std::time::Duration::from_millis(100);
+    let min_interval = std::time::Duration::from_millis(10);
     for (idx, app) in targets.iter().enumerate() {
         let cur = idx + 1;
+        seq += 1;
+        // Throttle: sleep if emitting too fast
+        let elapsed = last_emit.elapsed();
+        if elapsed < min_interval {
+            tokio::time::sleep(min_interval - elapsed).await;
+        }
         let _ = app_handle.emit("uninstall-progress", UninstallProgressPayload {
-            current: cur, total, app_name: app.name.clone(), status: "processing".into(),
+            seq, current: cur, total, app_name: app.name.clone(), status: "processing".into(),
             log: format!("Uninstalling {} {}{}", app.name, app.version.as_deref().unwrap_or(""), if payload.force { " (force)" } else { "" })
         });
+        last_emit = std::time::Instant::now();
         let mut opts = if payload.force { UninstallOptions::force() } else { UninstallOptions::standard() };
         opts.silent = payload.silent.unwrap_or(false);
         let res = if payload.force { svc.force_remove_app(app, opts.clone()).await } else { svc.uninstall_app(app, opts.clone()).await };
@@ -412,22 +481,41 @@ async fn uninstall_applications(
             Ok(r) => {
                 let log = if r.success { format!("{} via {} (files:{}, regs:{})", app.name, r.strategy_used, r.files_deleted.len(), r.registry_keys_deleted.len()) } else { r.errors.join("; ") };
                 let status = if r.success { "done" } else { "error" };
-                let _ = app_handle.emit("uninstall-progress", UninstallProgressPayload { current: cur, total, app_name: app.name.clone(), status: status.into(), log: log.clone() });
+                seq += 1;
+                let elapsed2 = last_emit.elapsed();
+                if elapsed2 < min_interval {
+                    tokio::time::sleep(min_interval - elapsed2).await;
+                }
+                let _ = app_handle.emit("uninstall-progress", UninstallProgressPayload { seq, current: cur, total, app_name: app.name.clone(), status: status.into(), log: log.clone() });
+                last_emit = std::time::Instant::now();
                 results.push(UninstallResultDto { id: app.id.to_string(), name: app.name.clone(), success: r.success, error: if r.success { None } else { Some(log) } });
             }
             Err(e) => {
                 let msg = e.to_string();
-                let _ = app_handle.emit("uninstall-progress", UninstallProgressPayload { current: cur, total, app_name: app.name.clone(), status: "error".into(), log: msg.clone() });
+                seq += 1;
+                let elapsed2 = last_emit.elapsed();
+                if elapsed2 < min_interval {
+                    tokio::time::sleep(min_interval - elapsed2).await;
+                }
+                let _ = app_handle.emit("uninstall-progress", UninstallProgressPayload { seq, current: cur, total, app_name: app.name.clone(), status: "error".into(), log: msg.clone() });
+                last_emit = std::time::Instant::now();
                 results.push(UninstallResultDto { id: app.id.to_string(), name: app.name.clone(), success: false, error: Some(msg) });
             }
         }
     }
+    // Final summary event with seq ensures frontend can detect completion even if prior events were batched (§2.1)
+    seq += 1;
+    let _ = app_handle.emit("uninstall-progress", UninstallProgressPayload {
+        seq, current: total, total, app_name: "complete".into(), status: "completed".into(),
+        log: format!("Batch complete: {} succeeded, {} failed", results.iter().filter(|r| r.success).count(), results.iter().filter(|r| !r.success).count())
+    });
     { let mut map = registry.0.lock().map_err(|e| format!("lock {e}"))?; for r in &results { if r.success { map.remove(&r.id); } } }
     Ok(results)
 }
 
 #[tauri::command]
 async fn get_app_icon(registry: State<'_, AppRegistry>, id: String) -> Result<Option<String>, String> {
+    validate_single_id(&id)?;
     let path_opt = {
         let map = registry.0.lock().map_err(|e| format!("lock {e}"))?;
         map.get(&id).and_then(|a| a.icon_path.clone())
@@ -583,6 +671,7 @@ async fn get_app_resources(registry: State<'_, AppRegistry>) -> Result<HashMap<S
 
 #[tauri::command]
 async fn get_app_resource(registry: State<'_, AppRegistry>, id: String) -> Result<Option<AppResourceDto>, String> {
+    validate_single_id(&id)?;
     let app = {
         let map = registry.0.lock().map_err(|e| format!("lock {e}"))?;
         map.get(&id).cloned().ok_or_else(|| format!("App {id} not found"))?
@@ -621,6 +710,7 @@ async fn scan_videos() -> Result<Vec<VideoEntryDto>, String> {
 
 #[tauri::command]
 async fn delete_videos(paths: Vec<String>) -> Result<Vec<String>, String> {
+    validate_paths(&paths)?;
     use greek_core::video::VideoScanner;
     let scanner = VideoScanner::new();
     let pbs: Vec<std::path::PathBuf> = paths.into_iter().map(std::path::PathBuf::from).collect();
@@ -647,6 +737,7 @@ async fn scan_dev_modules() -> Result<Vec<DevModuleDto>, String> {
 
 #[tauri::command]
 async fn clean_dev_modules(paths: Vec<String>) -> Result<Vec<String>, String> {
+    validate_paths(&paths)?;
     use greek_core::dev_modules::DevModulesScanner;
     let scanner = DevModulesScanner::new();
     let pbs: Vec<std::path::PathBuf> = paths.into_iter().map(std::path::PathBuf::from).collect();

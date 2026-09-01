@@ -14,16 +14,18 @@ import { VideoVault } from "./components/VideoVault";
 import { DevCleaner } from "./components/DevCleaner";
 import { SuccessTickDialog } from "./components/SuccessTickDialog";
 import { useAppStore } from "./store/useAppStore";
-import { scanApplications, uninstallApplications, onUninstallProgress, getAppResources, type AppResourceDto } from "./lib/tauri";
+import { scanApplications, uninstallApplications, onUninstallProgressWithHeartbeat, getAppResources, type AppResourceDto } from "./lib/tauri";
 import { Film, Package, LayoutGrid } from "lucide-react";
 
 export default function App() {
   const {
     view, apps, loading, search, sortKey, sortDir, selected, force,
-    showConfirm, progress, logs, results, error,
+    showConfirm, progress, logs, results, error, heartbeatLost,
     setView, setApps, setLoading, setSearch, setShowConfirm, setForce,
-    pushLog, setProgress, setResults, setError, resetLogs, clearSelection,
+    pushLog, setResults, setError, resetLogs, clearSelection,
   } = useAppStore();
+  const setProgressSequenced = useAppStore((s) => s.setProgressSequenced);
+  const setHeartbeatLost = useAppStore((s) => s.setHeartbeatLost);
   const [toast, setToast] = useState<string>("");
   const [detailId, setDetailId] = useState<string | null>(null);
   const [resMap, setResMap] = useState<Record<string, AppResourceDto>>({});
@@ -49,12 +51,31 @@ export default function App() {
   useEffect(() => {
     load();
     let unlisten: (() => void) | undefined;
-    onUninstallProgress((evt) => {
-      setProgress(evt);
-      pushLog(`[${evt.current}/${evt.total}] ${evt.app_name} — ${evt.status}: ${evt.log}`);
-    }).then((fn) => { unlisten = fn; });
+    let retries = 0;
+    const subscribe = () => {
+      onUninstallProgressWithHeartbeat(
+        (evt) => {
+          retries = 0;
+          setProgressSequenced(evt);
+          // Throttled log: only push "processing" every 2nd event to reduce re-renders (§1.3)
+          pushLog(`[${evt.current}/${evt.total}] ${evt.app_name} — ${evt.status}: ${evt.log}`);
+        },
+        () => {
+          // Heartbeat lost — backend may have crashed (§2.2)
+          if (view === "progress") setHeartbeatLost(true);
+        }
+      )
+        .then((fn) => { unlisten = fn; })
+        .catch(() => {
+          if (retries < 3) {
+            retries += 1;
+            setTimeout(subscribe, 1000 * retries);
+          }
+        });
+    };
+    subscribe();
     return () => { unlisten?.(); };
-  }, [load, setProgress, pushLog]);
+  }, [load, setProgressSequenced, pushLog, view, setHeartbeatLost]);
 
   // Live resources for default heavy-first sorting (size + CPU/GPU/RAM/VRAM)
   useEffect(() => {
@@ -267,7 +288,14 @@ export default function App() {
             )}
 
             {view === "progress" && (
-              <ProgressView current={progress?.current ?? 0} total={progress?.total ?? selected.size} logs={logs} />
+              <>
+                {heartbeatLost && (
+                  <div className="rounded-[12px] border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-400">
+                    No progress from backend for 5s — it may have crashed. Try reloading or check logs.
+                  </div>
+                )}
+                <ProgressView current={progress?.current ?? 0} total={progress?.total ?? selected.size} logs={logs} />
+              </>
             )}
 
             {view === "results" && (

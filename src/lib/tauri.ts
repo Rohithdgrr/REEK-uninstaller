@@ -37,10 +37,11 @@ export type AppDetails = {
 export type UninstallPayload = { ids: string[]; force: boolean; silent?: boolean };
 
 export type UninstallProgressEvent = {
+  seq: number;
   current: number;
   total: number;
   app_name: string;
-  status: "processing" | "done" | "error";
+  status: "processing" | "done" | "error" | "completed";
   log: string;
 };
 
@@ -160,4 +161,30 @@ export async function cleanAllDevModules(): Promise<string[]> {
 
 export function onUninstallProgress(cb: (e: UninstallProgressEvent) => void): Promise<UnlistenFn> {
   return listen<UninstallProgressEvent>("uninstall-progress", (event) => cb(event.payload));
+}
+
+/**
+ * Heartbeat-aware listener with retry. Resolves with unlisten fn, or rejects if backend dies.
+ * Frontend should show warning if no event for 5s (Audit 2 §2.2).
+ */
+export async function onUninstallProgressWithHeartbeat(
+  cb: (e: UninstallProgressEvent) => void,
+  onHeartbeatLost?: () => void
+): Promise<UnlistenFn> {
+  let lastEvent = Date.now();
+  const wrapped = (e: UninstallProgressEvent) => {
+    lastEvent = Date.now();
+    cb(e);
+  };
+  const unlisten = await listen<UninstallProgressEvent>("uninstall-progress", (event) => wrapped(event.payload));
+  const heartbeat = window.setInterval(() => {
+    if (Date.now() - lastEvent > 5000) {
+      onHeartbeatLost?.();
+    }
+  }, 5000);
+  const originalUnlisten = unlisten;
+  return () => {
+    window.clearInterval(heartbeat);
+    originalUnlisten();
+  };
 }
