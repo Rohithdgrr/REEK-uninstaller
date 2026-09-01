@@ -6,7 +6,7 @@ type Props = {
   apps: AppEntry[];
 };
 
-export function AppTable({ apps }: Props) {
+export function AppTable({ apps, onDetails }: Props & { onDetails?: (id: string) => void }) {
   const { selected, toggleSelect, toggleSelectAll, sortKey, sortDir, setSort } = useAppStore();
   const visibleIds = apps.map((a) => a.id);
   const allChecked = visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
@@ -55,8 +55,13 @@ export function AppTable({ apps }: Props) {
               </tr>
             ) : (
               apps.map((app) => (
-                <tr key={app.id} className={`hover:bg-slate-50 transition ${selected.has(app.id) ? "bg-blue-50/60" : ""}`}>
-                  <td className="px-4 py-3">
+                <tr
+                  key={app.id}
+                  onClick={() => onDetails?.(app.id)}
+                  className={`hover:bg-slate-50 transition cursor-pointer ${selected.has(app.id) ? "bg-blue-50/60" : ""}`}
+                  title="Click for details"
+                >
+                  <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                     <input
                       type="checkbox"
                       aria-label={`Select ${app.name}`}

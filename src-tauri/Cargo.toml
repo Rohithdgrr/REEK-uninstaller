@@ -19,3 +19,5 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 greek-common = { path = "../crates/greek-common" }
 greek-core = { path = "../crates/greek-core" }
+greek-windows = { path = "../crates/greek-windows" }
+humansize = "2.1.3"

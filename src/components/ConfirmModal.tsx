@@ -52,7 +52,16 @@ export function ConfirmModal({
               onChange={(e) => onForceChange(e.target.checked)}
               className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-600"
             />
-            Force removal if uninstaller fails
+            Force removal if uninstaller fails (also deletes files/registry)
+          </label>
+          <label className="mt-2 flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              disabled
+              checked={false}
+              className="h-4 w-4 rounded border-slate-300 text-blue-600"
+            />
+            Silent uninstall (no prompts) <span className="text-xs text-slate-400">— coming via UninstallOptions.silent</span>
           </label>
         </div>
         <div className="mt-6 flex justify-end gap-3 bg-slate-50 border-t border-slate-200 px-6 py-4">

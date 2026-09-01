@@ -3258,6 +3258,8 @@ dependencies = [
  "chrono",
  "greek-common",
  "greek-core",
+ "greek-windows",
+ "humansize",
  "serde",
  "serde_json",
  "tauri",

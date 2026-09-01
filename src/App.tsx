@@ -9,6 +9,8 @@ import { ProgressView } from "./components/ProgressView";
 import { ResultsView } from "./components/ResultsView";
 import { Skeleton } from "./components/Skeleton";
 import { Toast } from "./components/Toast";
+import { SystemStatsBar } from "./components/SystemStatsBar";
+import { AppDetailsDrawer } from "./components/AppDetailsDrawer";
 import { useAppStore } from "./store/useAppStore";
 import { scanApplications, uninstallApplications, onUninstallProgress } from "./lib/tauri";
 
@@ -20,6 +22,7 @@ export default function App() {
     pushLog, setProgress, setResults, setError, resetLogs, clearSelection,
   } = useAppStore();
   const [toast, setToast] = useState<string>("");
+  const [detailId, setDetailId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -86,7 +89,6 @@ export default function App() {
     await load();
   };
 
-  // Splash
   if (view === "splash" || (loading && apps.length === 0)) {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-8">
@@ -106,7 +108,8 @@ export default function App() {
     <div className="min-h-screen bg-slate-50 flex flex-col">
       <Header onScan={load} scanning={loading} />
 
-      <main className="flex-1 mx-auto w-full max-w-[1200px] px-6 py-6 pb-24 space-y-5">
+      <main className="flex-1 mx-auto w-full max-w-[1200px] px-6 py-6 pb-24 space-y-4">
+        <SystemStatsBar />
         {error && (
           <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
             {error}
@@ -116,7 +119,8 @@ export default function App() {
         {view === "dashboard" && (
           <>
             <SearchBar value={search} onChange={setSearch} count={filtered.length} />
-            {loading ? <Skeleton /> : <AppTable apps={filtered} />}
+            <p className="text-xs text-slate-500">Click a row for details · Use checkboxes for batch uninstall/force removal · Resources update live every 2.5s</p>
+            {loading ? <Skeleton /> : <AppTable apps={filtered} onDetails={setDetailId} />}
           </>
         )}
 
@@ -143,9 +147,10 @@ export default function App() {
         />
       )}
 
+      <AppDetailsDrawer id={detailId} onClose={() => setDetailId(null)} onUninstalled={load} />
+
       <Toast message={toast} onClose={() => setToast("")} />
 
-      {/* Accessibility: live region for progress */}
       <div aria-live="polite" className="sr-only">
         {progress ? `Progress ${progress.current} of ${progress.total}: ${progress.app_name} ${progress.status}` : ""}
       </div>
