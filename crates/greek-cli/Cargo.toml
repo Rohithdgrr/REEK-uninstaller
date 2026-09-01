@@ -25,7 +25,7 @@ clap = { version = "4.5.13", features = ["derive", "env", "cargo"] }
 clap_complete = "4.5.12"
 
 # Output Formatting
-comfy-table = "7.1.1"
+comfy-table = "8.0.0"
 indicatif = "0.17.8"
 console = "0.15.8"
 
