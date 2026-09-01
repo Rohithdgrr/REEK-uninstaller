@@ -1,7 +1,11 @@
 // greek-common - Shared types, errors, and constants for the REEK Ultimate Uninstaller
+// Production-grade: deny unwrap/expect in library code (audit §2.4). Tests allow them.
+#![warn(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // allow in this foundational crate; stricter in -core
 
 pub mod constants;
 pub mod error;
+pub mod logging;
 pub mod models;
 pub mod traits;
 

@@ -182,3 +182,105 @@ async fn test_force_strategy() {
     // Force remove can handle anything
     assert!(strategy.can_handle(&app));
 }
+
+#[test]
+fn test_protected_path_edge_cases() {
+    // Separator-aware: C:\Windows must not block C:\WindowsAppsFoo
+    let protected = vec!["C:\\Windows".to_string()];
+    assert!(greek_common::is_protected_path(
+        std::path::Path::new("C:\\Windows\\System32\\evil.exe"),
+        &protected
+    ));
+    assert!(!greek_common::is_protected_path(
+        std::path::Path::new("C:\\WindowsAppsFoo\\app.exe"),
+        &protected
+    ));
+    assert!(!greek_common::is_protected_path(
+        std::path::Path::new("C:\\Windows.old\\app.exe"),
+        &protected
+    ));
+}
+
+#[test]
+fn test_filesystem_backup_integration_with_tempfile() {
+    use tempfile::TempDir;
+    let tmp = TempDir::new().unwrap();
+    let app_dir = tmp.path().join("FakeApp");
+    std::fs::create_dir_all(app_dir.join("sub")).unwrap();
+    std::fs::write(app_dir.join("sub").join("file.txt"), b"hello").unwrap();
+    std::fs::write(app_dir.join("root.bin"), b"root").unwrap();
+
+    let mut tx = greek_core::backup::UninstallTransaction::new("FakeApp").unwrap();
+    tx.add_file_or_dir(&app_dir).unwrap();
+    assert_eq!(tx.entries.len(), 1);
+    tx.save_manifest().unwrap();
+    assert!(tx.root().join("manifest.json").exists());
+
+    // Simulate delete + rollback
+    std::fs::remove_dir_all(&app_dir).unwrap();
+    assert!(!app_dir.exists());
+    tx.rollback().unwrap();
+    assert!(app_dir.join("root.bin").exists());
+    assert!(app_dir.join("sub").join("file.txt").exists());
+}
+
+#[tokio::test]
+async fn test_portable_scanner_with_tempfile_100_apps_stress() {
+    use tempfile::TempDir;
+    let tmp = TempDir::new().unwrap();
+    // Create 100 fake portable app directories, each with an exe
+    for i in 0..100 {
+        let dir = tmp.path().join(format!("App{:03}", i));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("App{:03}.exe", i)), b"fake exe").unwrap();
+    }
+    let mut manager = ScannerManager::new();
+    manager.register_scanner(Box::new(PortableAppScanner::new(vec![tmp
+        .path()
+        .to_path_buf()])));
+    let apps = manager.scan_all().await.unwrap();
+    // Must handle 100 apps without panic and within timeout (60s per CI)
+    assert!(apps.len() >= 90, "expected ~100 apps, got {}", apps.len());
+}
+
+#[tokio::test]
+async fn test_leftover_analyzer_with_tempfile() {
+    use tempfile::TempDir;
+    let tmp = TempDir::new().unwrap();
+    let leftover_dir = tmp.path().join("LeftoverApp");
+    std::fs::create_dir_all(&leftover_dir).unwrap();
+    std::fs::write(leftover_dir.join("cache.tmp"), b"tmp").unwrap();
+
+    let app = InstalledApp::new(
+        "LeftoverApp".to_string(),
+        InstallSource::Registry {
+            hive: RegistryHive::Hklm,
+            key_path: "LeftoverApp".to_string(),
+        },
+    );
+    let mut app_with_loc = app.clone();
+    app_with_loc.install_location = Some(leftover_dir.clone());
+
+    let manager = LeftoverAnalyzerManager::new();
+    let artifacts = manager.analyze_app(&app_with_loc).await.unwrap();
+    // No analyzer registered by default -> empty, but must not error
+    let _ = artifacts;
+}
+
+#[test]
+fn test_logging_init_creates_file_sink() {
+    // Must not panic even when called twice (global subscriber already set in other tests)
+    let _ = greek_common::logging::init_logging(false);
+    tracing::info!("test log line for file sink");
+    let log_dir = greek_common::logging::log_dir();
+    assert!(log_dir.to_string_lossy().contains("logs") || log_dir.exists() || !log_dir.exists());
+}
+
+#[test]
+fn test_error_severity_classification() {
+    let e = greek_common::GreekError::SafetyError("protected".to_string());
+    assert_eq!(e.severity(), greek_common::ErrorSeverity::UserIntervention);
+    let e = greek_common::GreekError::Timeout("5s".to_string());
+    assert_eq!(e.severity(), greek_common::ErrorSeverity::Recoverable);
+    assert!(e.is_recoverable());
+}

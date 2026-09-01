@@ -1,0 +1,25 @@
+[package]
+name = "reek-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+greek-core = { path = "../crates/greek-core" }
+greek-common = { path = "../crates/greek-common" }
+
+[[bin]]
+name = "parse_command"
+path = "fuzz_targets/parse_command.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "protected_path"
+path = "fuzz_targets/protected_path.rs"
+test = false
+doc = false

@@ -148,6 +148,38 @@ pub enum ConfigError {
     ValidationFailed(String),
 }
 
+/// Error severity classification for recovery decisions (audit §6.3)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorSeverity {
+    /// Transient, safe to retry with backoff (e.g., sharing violation)
+    Recoverable,
+    /// Unrecoverable logic error — stop batch
+    Fatal,
+    /// Needs user decision (elevation, confirm)
+    UserIntervention,
+}
+
+impl GreekError {
+    pub fn severity(&self) -> ErrorSeverity {
+        match self {
+            GreekError::Timeout(_) => ErrorSeverity::Recoverable,
+            GreekError::IoError(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                ErrorSeverity::UserIntervention
+            }
+            GreekError::PermissionError(_) | GreekError::SafetyError(_) => {
+                ErrorSeverity::UserIntervention
+            }
+            GreekError::NotFound(_) => ErrorSeverity::Recoverable,
+            GreekError::ScanError(_) => ErrorSeverity::Recoverable,
+            _ => ErrorSeverity::Fatal,
+        }
+    }
+
+    pub fn is_recoverable(&self) -> bool {
+        self.severity() == ErrorSeverity::Recoverable
+    }
+}
+
 impl From<ScanError> for GreekError {
     fn from(err: ScanError) -> Self {
         GreekError::ScanError(err.to_string())

@@ -10,13 +10,15 @@ on GitHub Actions.
 push / pull_request (main | develop)
                 │
                 ▼
-        ┌───────┴───────────┬───────────────────────┬──────────────┬──────────────┬──────────────┐
-        ▼                   ▼                       ▼              ▼              ▼              ▼
-  [1] Check             [2] MSRV                [3] Security    [4] Build      [5] Doc       [6] Coverage
-  fmt / clippy          cargo check                cargo-audit   cargo build    cargo doc     cargo-llvm-cov
-  / test                1.88.0                     cargo-deny    --release                   floor 20%
-  ubuntu/windows/macos                              ubuntu       3 targets      ubuntu       ubuntu
+   ┌──────┬──────┬──────────┬─────────┬─────────┬──────────┬─────────┬──────────┐
+   ▼      ▼      ▼          ▼         ▼         ▼          ▼         ▼          ▼
+[1] Check [2] MSRV [3] Security [4] Build [5] Doc [6] Coverage [7] DocsAudit [8] Fuzz
+fmt/clippy cargo check cargo-audit cargo build cargo doc cargo-llvm-cov required files fuzz 30s
+/test   1.88.0   cargo-deny  --release                   floor 40% SECURITY etc 2 targets
+ubuntu/win/mac          ubuntu  3 targets ubuntu ubuntu    ubuntu     ubuntu(nightly)
 ```
+
+Release pipeline lives separately in `.github/workflows/release.yml` (trigger: `v*.*.*` tag) — see [RELEASING.md](RELEASING.md).
 
 ## Jobs
 
@@ -99,7 +101,22 @@ Runs on **ubuntu-latest**, `permissions: contents: read`.
 | Toolchain | `dtolnay/rust-toolchain` + `llvm-tools-preview` | Provides `llvm-profdata`/`llvm-cov` |
 | `cargo install cargo-llvm-cov --locked --version 0.8.7` | cargo-llvm-cov | Pinned tool version |
 | `cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info` | — | Generates `lcov.info` (uploaded as an artifact) |
-| `cargo llvm-cov report --fail-under-lines 20` | — | Regression floor (cross-platform; raises as coverage grows, target 80%+) |
+| `cargo llvm-cov report --fail-under-lines 40` | — | Regression floor 40% (raised from 20% after fuzz + tempfile tests; target 80%+) |
+
+### 7. `docs-audit` — Documentation presence
+
+Checks `SECURITY.md`, `docs/SECURITY.md`, `docs/ARCHITECTURE.md`, `docs/CI_CD.md`, `docs/RELEASING.md`, `CONTRIBUTING.md`, `CHANGELOG.md` exist and contain required sections. Fails build if missing — enforces recommendation E.
+
+### 8. `fuzz` — Fuzz smoke
+
+Runs on `nightly`, 30s per target:
+
+```
+cargo fuzz run parse_command -- -max_total_time=30 -max_len=128
+cargo fuzz run protected_path -- -max_total_time=30 -max_len=128
+```
+
+Targets live in `fuzz/fuzz_targets/`. Unit-level fuzz (500 random strings) also runs in `cargo test` without nightly.
 
 Local equivalent:
 
@@ -149,7 +166,4 @@ make clippy    # clippy with -D warnings
 
 ## Releases
 
-Releases are cut from `main` via git tags (see `docs/RELEASING.md`). A
-release tag `v0.1.0` builds the same `build` job output and attaches artifacts
-to the GitHub Release. The release pipeline is intentionally not wired into the
-PR-triggered `ci.yml`; it is triggered separately on tag pushes.
+Releases are cut from `main` via git tags (see `docs/RELEASING.md`). Tag `v0.1.0` triggers `.github/workflows/release.yml` which builds, SBOMs, attests (OIDC/SLSA), and publishes to GitHub Releases. See `packaging/homebrew`, `packaging/winget`, `packaging/aur` for downstream recipes.

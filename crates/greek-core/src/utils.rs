@@ -80,41 +80,121 @@ pub fn get_file_size(path: &Path) -> Result<u64> {
 }
 
 pub fn get_directory_size(path: &Path) -> Result<u64> {
+    // Cached size would be better; for now compute with single-threaded walk,
+    // following no symlinks, capping at MAX_TOTAL_SCAN_SIZE_BYTES.
     let mut total_size = 0u64;
-
     for entry in walkdir::WalkDir::new(path)
+        .follow_links(false)
+        .max_open(32)
         .into_iter()
         .filter_map(|e| e.ok())
     {
         if entry.file_type().is_file() {
             if let Ok(metadata) = entry.metadata() {
-                total_size += metadata.len();
+                total_size = total_size.saturating_add(metadata.len());
+                if total_size > greek_common::MAX_TOTAL_SCAN_SIZE_BYTES {
+                    tracing::warn!(
+                        "Directory size capped at {} for {}",
+                        greek_common::MAX_TOTAL_SCAN_SIZE_BYTES,
+                        path.display()
+                    );
+                    break;
+                }
             }
         }
     }
-
     Ok(total_size)
 }
 
+fn canonical_protected_check(path: &Path) -> Result<PathBuf> {
+    // Resolve symlinks/junctions via canonicalize if exists; else normalize.
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| normalize_path(path));
+    let protected = greek_common::PROTECTED_PATHS
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
+    // Check both original and canonical (TOCTOU mitigation)
+    if is_protected_path(path, &protected) || is_protected_path(&canonical, &protected) {
+        return Err(GreekError::SafetyError(format!(
+            "Refusing to delete protected system path: {} (canonical: {})",
+            path.display(),
+            canonical.display()
+        )));
+    }
+    Ok(canonical)
+}
+
 pub fn delete_file(path: &Path) -> Result<()> {
+    let _canonical = canonical_protected_check(path)?;
+    // Acquire handle with exclusive share where possible before delete to narrow TOCTOU window.
+    // On Windows this open will fail if another process holds the file; we still attempt remove.
+    let _ = std::fs::OpenOptions::new().read(true).open(path);
+    // Re-validate after open (TOCTOU)
+    let _ = canonical_protected_check(path)?;
     std::fs::remove_file(path)?;
     Ok(())
 }
 
 pub fn delete_directory(path: &Path) -> Result<()> {
-    // Safety: refuse to delete protected system paths.
+    let canonical = canonical_protected_check(path)?;
+    // Try to open directory handle to detect symlink swap (best-effort).
+    let _handle = std::fs::File::open(&canonical).ok();
+    // Re-validate after handle open
     let protected = greek_common::PROTECTED_PATHS
         .iter()
         .map(|s| s.to_string())
         .collect::<Vec<_>>();
-    if is_protected_path(path, &protected) {
+    if is_protected_path(&canonical, &protected) {
         return Err(GreekError::SafetyError(format!(
-            "Refusing to delete protected system path: {}",
+            "Refusing to delete protected system path (re-checked): {}",
+            canonical.display()
+        )));
+    }
+    // Ensure we are not deleting via symlink: canonical must be dir
+    if std::fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err(GreekError::SafetyError(format!(
+            "Refusing to delete symlink directory: {}",
             path.display()
         )));
     }
-    std::fs::remove_dir_all(path)?;
+    exponential_retry(|| std::fs::remove_dir_all(path), 3)?;
     Ok(())
+}
+
+fn exponential_retry<F, T, E>(mut f: F, max_retries: u32) -> std::result::Result<T, E>
+where
+    F: FnMut() -> std::result::Result<T, E>,
+    E: std::fmt::Display,
+{
+    let mut attempt = 0;
+    loop {
+        match f() {
+            Ok(v) => return Ok(v),
+            Err(e) if attempt < max_retries => {
+                let backoff = std::time::Duration::from_millis(100 * 2u64.pow(attempt));
+                tracing::warn!(
+                    "Transient failure ({}), retrying in {:?} (attempt {}/{})",
+                    e,
+                    backoff,
+                    attempt + 1,
+                    max_retries
+                );
+                std::thread::sleep(
+                    backoff + std::time::Duration::from_millis(rand_jitter(attempt)),
+                );
+                attempt += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+fn rand_jitter(seed: u32) -> u64 {
+    // Simple jitter without extra dep: (seed * 73) % 50
+    (seed as u64 * 73) % 50
 }
 
 pub fn move_to_recycle_bin(path: &Path) -> Result<()> {

@@ -5,10 +5,15 @@ use greek_common::{
     GreekError, InstalledApp, Result, UninstallError, UninstallOptions, UninstallResult,
     UninstallStrategy,
 };
-use std::process::Command;
+use std::sync::OnceLock;
 use std::time::Duration;
-use tokio::time::timeout;
+use tokio::sync::Semaphore;
 use tracing;
+
+static UNINSTALL_SEMAPHORE: OnceLock<Semaphore> = OnceLock::new();
+fn uninstall_semaphore() -> &'static Semaphore {
+    UNINSTALL_SEMAPHORE.get_or_init(|| Semaphore::new(4))
+}
 
 /// Base uninstall strategy with common functionality
 pub struct BaseUninstallStrategy {
@@ -169,8 +174,11 @@ impl StandardUninstallStrategy {
         _silent: bool,
         timeout_secs: u64,
     ) -> Result<CommandExecutionResult> {
-        // Parse the command string
-        let parts = self.parse_command_string(command);
+        // Strict parsing: shell_words is primary; custom quote-aware path is fallback
+        // that now returns Result instead of silent split_whitespace.
+        let parts = self.parse_command_string(command).map_err(|e| {
+            GreekError::UninstallError(UninstallError::ExecutionFailed(e).to_string())
+        })?;
 
         if parts.is_empty() {
             return Err(GreekError::UninstallError(
@@ -178,27 +186,21 @@ impl StandardUninstallStrategy {
             ));
         }
 
+        // Validate executable exists and is not overly broad (TOCTOU-safe check happens later)
         let program = parts[0].clone();
         let args: Vec<String> = parts[1..].to_vec();
 
-        // Execute the command
-        let output = timeout(
-            Duration::from_secs(timeout_secs),
-            tokio::task::spawn_blocking(move || Command::new(&program).args(&args).output()),
-        )
-        .await
-        .map_err(|_| GreekError::UninstallError(UninstallError::Timeout(timeout_secs).to_string()))?
-        .map_err(|e| {
-            GreekError::UninstallError(UninstallError::ExecutionFailed(e.to_string()).to_string())
-        })?
-        .map_err(|e| {
+        // Bounded parallelism: at most 4 concurrent uninstall commands system-wide
+        let _permit = uninstall_semaphore().acquire().await.map_err(|e| {
             GreekError::UninstallError(UninstallError::ExecutionFailed(e.to_string()).to_string())
         })?;
+        let output = Self::run_command_sanitized_with_timeout(program, args, timeout_secs).await?;
 
         let success = output.status.success();
         let exit_code = output.status.code();
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        // Cap stdout/stderr to prevent log bloat (redacted if too large)
+        let stdout = Self::sanitize_output(&output.stdout);
+        let stderr = Self::sanitize_output(&output.stderr);
 
         Ok(CommandExecutionResult {
             success,
@@ -208,32 +210,70 @@ impl StandardUninstallStrategy {
         })
     }
 
-    fn parse_command_string(&self, command: &str) -> Vec<String> {
-        // CR-8: Handle edge cases in Windows uninstall command strings.
-        //
-        // Uninstall strings can look like:
-        //   "C:\Program Files\App\uninstall.exe" /S
-        //   msiexec.exe /x {GUID} /qn
-        //   "C:\App\uninst.exe" /S /D="C:\My Path"
-        //
-        // The hand-rolled parser handles the common cases. For complex
-        // inputs (escaped quotes, trailing backslashes before quotes),
-        // we fall back to shell_words then split_whitespace.
-        if command.contains('"') {
+    pub fn sanitize_output(bytes: &[u8]) -> String {
+        const MAX: usize = 8192;
+        let s = String::from_utf8_lossy(bytes);
+        if s.len() > MAX {
+            // Truncate and indicate, redacting potential secrets
+            format!("{}...[truncated {} bytes]", &s[..MAX], s.len() - MAX)
+        } else {
+            // Basic redaction: hide tokens that look like passwords/keys
+            Self::redact_secrets(&s)
+        }
+    }
+
+    fn redact_secrets(s: &str) -> String {
+        // Naive redaction: mask common secret patterns
+        let mut out = s.to_string();
+        for pat in ["/token=", "token=", "/password=", "password=", "key="] {
+            if let Some(idx) = out.to_lowercase().find(pat) {
+                let start = idx + pat.len();
+                let end = out[start..]
+                    .find(|c: char| c.is_whitespace() || c == '&' || c == '"')
+                    .map(|i| start + i)
+                    .unwrap_or(out.len().min(start + 16));
+                out.replace_range(start..end, "***");
+            }
+        }
+        out
+    }
+
+    pub fn parse_command_string(&self, command: &str) -> std::result::Result<Vec<String>, String> {
+        // Primary: shell_words (POSIX-aware, handles escaping correctly)
+        // Fallback: hand-rolled quote parser for Windows-style paths that shell_words may mangle.
+        // No split_whitespace fallback — fail explicitly to avoid injection.
+        let trimmed = command.trim();
+        if trimmed.is_empty() {
+            return Err("Empty command".to_string());
+        }
+
+        // Try shell_words first
+        match shell_words::split(trimmed) {
+            Ok(parts) if !parts.is_empty() => return Ok(parts),
+            Ok(_) => {} // empty, fall through to custom
+            Err(e) => {
+                tracing::warn!(
+                    "shell_words parse failed ({}), trying Windows quote parser",
+                    e
+                );
+            }
+        }
+
+        // Windows quote-aware fallback
+        if trimmed.contains('"') {
             let mut parts = Vec::new();
             let mut current = String::new();
             let mut in_quotes = false;
-            let chars: Vec<char> = command.chars().collect();
+            let chars: Vec<char> = trimmed.chars().collect();
             let len = chars.len();
             let mut i = 0;
             while i < len {
                 let c = chars[i];
                 match c {
                     '"' => {
-                        // CR-8: handle \" (escaped quote inside quoted string)
                         if in_quotes && i + 1 < len && chars[i + 1] == '"' {
                             current.push('"');
-                            i += 1; // skip the escaped quote
+                            i += 1;
                         } else {
                             in_quotes = !in_quotes;
                         }
@@ -247,15 +287,85 @@ impl StandardUninstallStrategy {
                 }
                 i += 1;
             }
+            if in_quotes {
+                return Err("Unterminated quote in command string".to_string());
+            }
             if !current.is_empty() {
                 parts.push(current);
             }
             if !parts.is_empty() {
-                return parts;
+                return Ok(parts);
             }
         }
-        shell_words::split(command)
-            .unwrap_or_else(|_| command.split_whitespace().map(|s| s.to_string()).collect())
+
+        Err(format!("Failed to parse command string: {}", trimmed))
+    }
+
+    pub(crate) async fn run_command_sanitized_with_timeout(
+        program: String,
+        args: Vec<String>,
+        timeout_secs: u64,
+    ) -> Result<std::process::Output> {
+        tokio::task::spawn_blocking(move || {
+            use std::process::{Command, Stdio};
+            let mut cmd = Command::new(&program);
+            cmd.args(&args);
+            cmd.env_clear();
+            if let Ok(p) = std::env::var("PATH") {
+                cmd.env("PATH", p);
+            }
+            if let Ok(s) = std::env::var("SYSTEMROOT") {
+                cmd.env("SYSTEMROOT", s);
+            }
+            if let Ok(w) = std::env::var("WINDIR") {
+                cmd.env("WINDIR", w);
+            }
+            // Windows need SystemDrive etc for msiexec; preserve TEMP as well for installer logs
+            if let Ok(t) = std::env::var("TEMP") {
+                cmd.env("TEMP", t);
+            }
+            if let Ok(t) = std::env::var("TMP") {
+                cmd.env("TMP", t);
+            }
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+            let mut child = cmd.spawn().map_err(|e| {
+                GreekError::UninstallError(
+                    UninstallError::ExecutionFailed(e.to_string()).to_string(),
+                )
+            })?;
+            let start = std::time::Instant::now();
+            let timeout_dur = Duration::from_secs(timeout_secs);
+            loop {
+                match child.try_wait().map_err(|e| {
+                    GreekError::UninstallError(
+                        UninstallError::ExecutionFailed(e.to_string()).to_string(),
+                    )
+                })? {
+                    Some(_status) => {
+                        // Child exited, collect output
+                        return child.wait_with_output().map_err(|e| {
+                            GreekError::UninstallError(
+                                UninstallError::ExecutionFailed(e.to_string()).to_string(),
+                            )
+                        });
+                    }
+                    None => {
+                        if start.elapsed() > timeout_dur {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            return Err(GreekError::UninstallError(
+                                UninstallError::Timeout(timeout_secs).to_string(),
+                            ));
+                        }
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|e| {
+            GreekError::UninstallError(UninstallError::ExecutionFailed(e.to_string()).to_string())
+        })?
     }
 }
 
@@ -309,23 +419,15 @@ impl UninstallStrategy for MsiUninstallStrategy {
 
         let start_time = std::time::Instant::now();
         let timeout_secs = options.timeout_seconds.unwrap_or(300);
-
-        let output = timeout(
-            Duration::from_secs(timeout_secs),
-            tokio::task::spawn_blocking(move || {
-                Command::new("msiexec.exe")
-                    .args(["/x", &product_code])
-                    .output()
-            }),
-        )
-        .await
-        .map_err(|_| GreekError::UninstallError(UninstallError::Timeout(timeout_secs).to_string()))?
-        .map_err(|e| {
-            GreekError::UninstallError(UninstallError::ExecutionFailed(e.to_string()).to_string())
-        })?
-        .map_err(|e| {
+        let _permit = uninstall_semaphore().acquire().await.map_err(|e| {
             GreekError::UninstallError(UninstallError::ExecutionFailed(e.to_string()).to_string())
         })?;
+        let output = StandardUninstallStrategy::run_command_sanitized_with_timeout(
+            "msiexec.exe".to_string(),
+            vec!["/x".to_string(), product_code],
+            timeout_secs,
+        )
+        .await?;
 
         let success = output.status.success();
 
@@ -335,8 +437,8 @@ impl UninstallStrategy for MsiUninstallStrategy {
             strategy_used: self.strategy_id().to_string(),
             exit_code: output.status.code(),
             duration: start_time.elapsed(),
-            stdout: Some(String::from_utf8_lossy(&output.stdout).to_string()),
-            stderr: Some(String::from_utf8_lossy(&output.stderr).to_string()),
+            stdout: Some(StandardUninstallStrategy::sanitize_output(&output.stdout)),
+            stderr: Some(StandardUninstallStrategy::sanitize_output(&output.stderr)),
             ..Default::default()
         })
     }
@@ -352,23 +454,20 @@ impl UninstallStrategy for MsiUninstallStrategy {
 
         let start_time = std::time::Instant::now();
         let timeout_secs = options.timeout_seconds.unwrap_or(300);
-
-        let output = timeout(
-            Duration::from_secs(timeout_secs),
-            tokio::task::spawn_blocking(move || {
-                Command::new("msiexec.exe")
-                    .args(["/x", &product_code, "/qn", "/norestart"])
-                    .output()
-            }),
-        )
-        .await
-        .map_err(|_| GreekError::UninstallError(UninstallError::Timeout(timeout_secs).to_string()))?
-        .map_err(|e| {
-            GreekError::UninstallError(UninstallError::ExecutionFailed(e.to_string()).to_string())
-        })?
-        .map_err(|e| {
+        let _permit = uninstall_semaphore().acquire().await.map_err(|e| {
             GreekError::UninstallError(UninstallError::ExecutionFailed(e.to_string()).to_string())
         })?;
+        let output = StandardUninstallStrategy::run_command_sanitized_with_timeout(
+            "msiexec.exe".to_string(),
+            vec![
+                "/x".to_string(),
+                product_code,
+                "/qn".to_string(),
+                "/norestart".to_string(),
+            ],
+            timeout_secs,
+        )
+        .await?;
 
         let success = output.status.success();
 
@@ -378,8 +477,8 @@ impl UninstallStrategy for MsiUninstallStrategy {
             strategy_used: format!("{}-silent", self.strategy_id()),
             exit_code: output.status.code(),
             duration: start_time.elapsed(),
-            stdout: Some(String::from_utf8_lossy(&output.stdout).to_string()),
-            stderr: Some(String::from_utf8_lossy(&output.stderr).to_string()),
+            stdout: Some(StandardUninstallStrategy::sanitize_output(&output.stdout)),
+            stderr: Some(StandardUninstallStrategy::sanitize_output(&output.stderr)),
             ..Default::default()
         })
     }
@@ -689,19 +788,114 @@ mod tests {
         let strategy = StandardUninstallStrategy::new();
 
         // Quoted path with spaces must stay one token
-        let parts =
-            strategy.parse_command_string(r#""C:\Program Files\App\uninstall.exe" /S /noreboot"#);
+        let parts = strategy
+            .parse_command_string(r#""C:\Program Files\App\uninstall.exe" /S /noreboot"#)
+            .unwrap();
         assert_eq!(
             parts,
             vec![r"C:\Program Files\App\uninstall.exe", "/S", "/noreboot",]
         );
 
         // Unquoted simple command
-        let parts = strategy.parse_command_string("msiexec.exe /x {GUID} /qn");
+        let parts = strategy
+            .parse_command_string("msiexec.exe /x {GUID} /qn")
+            .unwrap();
         assert_eq!(parts, vec!["msiexec.exe", "/x", "{GUID}", "/qn"]);
 
         // CR-8: command with quoted argument containing spaces
-        let parts = strategy.parse_command_string(r#""C:\App\uninst.exe" /S /D="C:\My Path""#);
+        let parts = strategy
+            .parse_command_string(r#""C:\App\uninst.exe" /S /D="C:\My Path""#)
+            .unwrap();
         assert_eq!(parts, vec![r"C:\App\uninst.exe", "/S", r"/D=C:\My Path",]);
+
+        // Unterminated quote must error (no silent split_whitespace)
+        assert!(strategy
+            .parse_command_string(r#""C:\Program Files\App\uninstall.exe"#)
+            .is_err());
+    }
+
+    #[test]
+    fn test_parse_command_injection_vectors() {
+        let strategy = StandardUninstallStrategy::new();
+        // Shell metachars must remain literal args, not operators
+        for cmd in [
+            r#"C:\App\uninstall.exe & del C:\Windows"#,
+            r#"C:\App\uninstall.exe | powershell -c evil"#,
+            r#"C:\App\uninstall.exe; rm -rf /"#,
+            r#"C:\App\uninstall.exe `evil`"#,
+            r#"C:\App\uninstall.exe $(evil)"#,
+        ] {
+            let parts = strategy.parse_command_string(cmd).unwrap();
+            // Joined parts must round-trip without shell execution; parts contain the metachars as literals
+            assert!(
+                parts.iter().any(|p| p.contains('&')
+                    || p.contains('|')
+                    || p.contains(';')
+                    || p.contains('$')
+                    || p.contains('`'))
+                    || parts.len() > 1
+            );
+        }
+        // Empty and whitespace only
+        assert!(strategy.parse_command_string("").is_err());
+        assert!(strategy.parse_command_string("   ").is_err());
+    }
+
+    #[test]
+    fn test_parse_command_fuzz_malformed() {
+        // Property: random malformed strings must never panic, only Ok or Err
+        let strategy = StandardUninstallStrategy::new();
+        let cases = [
+            "\"",
+            "\"\"",
+            "\"\"\"",
+            "  \"  \"  ",
+            r#"C:\App\"uninst.exe""#,
+            "\"C:\\ unfinished",
+            "a \"b c d",
+            "a \"b\" c \"d",
+            "\0 \n \t",
+            "msiexec /x {not-a-guid}",
+            "\"C:\\Program Files\\App\\app.exe\" \"arg with \\\"inner\\\" quotes\"",
+            "   \t  ",
+            "\"\"\"\"\"\"",
+        ];
+        for c in cases {
+            let _ = strategy.parse_command_string(c); // must not panic
+        }
+        // Random bytes fuzz (deterministic PRNG)
+        let mut seed: u64 = 0x9e3779b97f4a7c15;
+        for _ in 0..500 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let len = (seed % 64) as usize;
+            let mut s = String::with_capacity(len);
+            for i in 0..len {
+                let b = ((seed >> (i % 8 * 8)) & 0xFF) as u8;
+                // printable + quotes + spaces
+                let c = match b % 10 {
+                    0 => '"',
+                    1 => ' ',
+                    2 => '\\',
+                    3 => '/',
+                    4 => ';',
+                    _ => (b % 94 + 33) as char,
+                };
+                s.push(c);
+            }
+            let _ = strategy.parse_command_string(&s);
+        }
+    }
+
+    #[test]
+    fn test_sanitize_and_redact() {
+        let _strategy = StandardUninstallStrategy::new();
+        // Redaction
+        let out = StandardUninstallStrategy::sanitize_output(b"token=/secret123 other");
+        assert!(out.contains("***"));
+        // Truncation
+        let big = vec![b'a'; 9000];
+        let out = StandardUninstallStrategy::sanitize_output(&big);
+        assert!(out.contains("truncated"));
+        assert!(out.len() < 9000);
     }
 }

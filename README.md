@@ -107,13 +107,18 @@ cargo doc --workspace --all-features --no-deps    # docs
 All of the above run automatically in CI on Linux, macOS, and Windows
 (see [docs/CI_CD.md](docs/CI_CD.md)). `make ci` runs the quality gates locally.
 
+## Observability
+
+- Structured logs: JSON to `<data_dir>/logs/reek.log.YYYY-MM-DD` (daily rotation, 14-day retention), pretty to `stderr`. `RUST_LOG=debug` or `--verbose` controls level. Secrets redacted (`sanitize_output` 8KB cap).
+- See [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) — log locations, how to file a bug, opt-in metrics/crash reporting.
+
 ## Security
 
 - [SECURITY.md](SECURITY.md) — threat model, supported versions, vulnerability
   reporting.
 - [docs/SECURITY.md](docs/SECURITY.md) — layered security architecture.
 - Security tooling: `cargo-audit`, `cargo-deny`, committed `Cargo.lock`, pinned
-  CI action SHAs, least-privilege CI permissions.
+  CI action SHAs, least-privilege CI permissions, SBOM via `cargo auditable`.
 
 ## Documentation
 
@@ -123,6 +128,7 @@ All of the above run automatically in CI on Linux, macOS, and Windows
 | [docs/CI_CD.md](docs/CI_CD.md) | CI jobs, gates, security, action pinning |
 | [docs/RELEASING.md](docs/RELEASING.md) | Release process & checklist |
 | [docs/SECURITY.md](docs/SECURITY.md) | Security architecture & controls |
+| [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) | Logs, retention, metrics, crash reporting |
 | [INSTALL.md](INSTALL.md) | Installing the Rust toolchain & building |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution guide |
 | [CHANGELOG.md](CHANGELOG.md) | Notable changes |

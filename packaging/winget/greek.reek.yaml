@@ -1,0 +1,20 @@
+# winget manifest for REEK Uninstaller
+# Submit with: wingetcreate update greek.reek -v 0.1.0 -u https://github.com/greek/greek-uninstaller/releases/download/v0.1.0/reek-x86_64-pc-windows-msvc.zip
+PackageIdentifier: greek.reek
+PackageVersion: 0.1.0
+PackageName: REEK Ultimate Uninstaller
+Publisher: Greek Team
+License: MIT
+ShortDescription: The uninstaller that actually uninstalls
+Description: Cross-platform application uninstaller with terminal UI and headless CLI. Handles registry, MSI, force-remove with protected-path guards.
+Moniker: reek
+Homepage: https://github.com/greek/greek-uninstaller
+Tags: [uninstaller, windows, rust, system-utility]
+Installers:
+  - Architecture: x64
+    InstallerType: zip
+    InstallerUrl: https://github.com/greek/greek-uninstaller/releases/download/v0.1.0/reek-x86_64-pc-windows-msvc.zip
+    InstallerSha256: REPLACE_WITH_SHA256_WINDOWS_X64
+    Scope: machine
+ManifestType: singleton
+ManifestVersion: 1.6.0

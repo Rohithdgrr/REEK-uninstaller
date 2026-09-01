@@ -278,7 +278,7 @@ impl SafetyLevel {
 }
 
 /// Options for uninstallation operations
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UninstallOptions {
     pub silent: bool,
     pub force: bool,
@@ -323,7 +323,7 @@ impl UninstallOptions {
 }
 
 /// Result of an uninstallation operation
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UninstallResult {
     pub app_id: Uuid,
     pub success: bool,
@@ -361,7 +361,7 @@ impl Default for UninstallResult {
 }
 
 /// Batch operation queue
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchQueue {
     pub items: Vec<BatchItem>,
     pub options: UninstallOptions,
@@ -405,14 +405,14 @@ impl BatchQueue {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchItem {
     pub app: InstalledApp,
     pub status: BatchStatus,
     pub result: Option<UninstallResult>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum BatchStatus {
     Queued,
     InProgress,

@@ -1,0 +1,25 @@
+# Maintainer: Greek Team <team@greek.io>
+pkgname=reek-uninstaller
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="REEK Ultimate Uninstaller - the uninstaller that actually uninstalls (Rust)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/greek/greek-uninstaller"
+license=('MIT' 'Apache-2.0')
+depends=('gcc-libs')
+makedepends=('cargo' 'rust')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/greek/greek-uninstaller/archive/v$pkgver.tar.gz")
+sha256sums=('REPLACE_WITH_SHA256_SOURCE')
+
+build() {
+  cd "$srcdir/greek-uninstaller-$pkgver"
+  cargo build --release --locked --workspace
+}
+
+package() {
+  cd "$srcdir/greek-uninstaller-$pkgver"
+  install -Dm755 "target/release/reek" "$pkgdir/usr/bin/reek"
+  install -Dm755 "target/release/reek-tui" "$pkgdir/usr/bin/reek-tui"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

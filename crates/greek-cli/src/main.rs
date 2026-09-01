@@ -107,15 +107,12 @@ async fn main() -> Result<()> {
     // Parse CLI first so --verbose can control tracing level
     let cli = Cli::parse();
 
-    let filter = if std::env::var("RUST_LOG").is_ok() {
-        tracing_subscriber::EnvFilter::from_default_env()
-    } else if cli.verbose {
-        tracing_subscriber::EnvFilter::new("debug")
-    } else {
-        tracing_subscriber::EnvFilter::new("info")
-    };
-
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    // Structured logging: JSON file sink (daily rotation) + stdout, RUST_LOG override.
+    // WorkerGuard must be held for lifetime of process to flush file logs.
+    let _log_guard = greek_common::logging::init_logging(cli.verbose)
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to init logging: {}", e))?;
+    // Prune logs older than 14 days (best-effort, non-fatal)
+    greek_common::logging::prune_old_logs(14);
 
     // Load configuration
     let config_manager = ConfigManager::new()?;

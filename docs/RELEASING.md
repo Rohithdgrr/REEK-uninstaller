@@ -75,20 +75,35 @@ git tag v0.1.1
 git push origin v0.1.1
 ```
 
-A release workflow (if configured) builds the `build` job output for all three
-platforms and attaches artifacts to a GitHub Release. If no release workflow is
-yet configured, create the release manually from the `build` job artifacts in
-GitHub → Releases → New release, pasting the changelog section into the notes.
+` .github/workflows/release.yml` triggers on `v*.*.*` tags:
+
+- Builds `reek` + `reek-tui` for all three targets (`x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, `aarch64-apple-darwin`).
+- Generates SBOM via `cargo auditable` + `Cargo.lock`, SHA256SUMS, and SLSA build provenance via `actions/attest-build-provenance` (OIDC, no long-lived signing keys).
+- Creates a GitHub Release with all artifacts and auto-generated notes from `CHANGELOG.md`.
 
 ## What the release contains
 
-The `build` CI job produces:
+The `release` workflow produces per target:
 
-| Target | Binary |
+| Target | Binary + Artifacts |
 |--------|--------|
-| x86_64-unknown-linux-gnu | `reek`, `reek-tui` |
-| x86_64-pc-windows-msvc | `reek.exe`, `reek-tui.exe` |
-| aarch64-apple-darwin | `reek`, `reek-tui` |
+| x86_64-unknown-linux-gnu | `reek`, `reek-tui`, `Cargo.lock`, `sbom.json`, `SHA256SUMS` |
+| x86_64-pc-windows-msvc | `reek.exe`, `reek-tui.exe`, `Cargo.lock`, `sbom.json`, `SHA256SUMS` |
+| aarch64-apple-darwin | `reek`, `reek-tui`, `Cargo.lock`, `sbom.json`, `SHA256SUMS` |
+
+Downstream packaging (see `packaging/`):
+
+- **Homebrew**: `packaging/homebrew/reek.rb` — update `sha256` after release, `brew audit --strict`.
+- **Winget**: `packaging/winget/greek.reek.yaml` — run `wingetcreate update`.
+- **AUR**: `packaging/aur/PKGBUILD` — update `sha256sums`, `makepkg --printsrcinfo`, push to AUR.
+
+Code signing: Windows binaries are signed via Sigstore OIDC (keyless cosign) when `cosign` is added to the release job; EV cert signing can replace this without workflow changes.
+
+### SBOM & Supply Chain
+
+- `Cargo.lock` committed (reproducible builds).
+- `cargo auditable` embeds dependency list in binaries (`cargo auditable report`).
+- `cargo audit` + `cargo deny` run in both `ci.yml` and `release.yml`.
 
 ## Patch / security releases
 

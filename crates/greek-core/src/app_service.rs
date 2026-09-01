@@ -388,10 +388,34 @@ impl GreekAppService {
         crate::backup::list_transactions()
     }
 
+    fn state_file_path() -> std::path::PathBuf {
+        std::env::temp_dir().join(".reek_state.json")
+    }
+
+    fn persist_batch_state(batch: &BatchQueue) -> Result<()> {
+        let p = Self::state_file_path();
+        let json = serde_json::to_string_pretty(batch)
+            .map_err(|e| GreekError::IoError(std::io::Error::other(e)))?;
+        // Secure temp file: write then restrict permissions (600 on Unix)
+        std::fs::write(&p, json)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
+        }
+        Ok(())
+    }
+
+    fn clear_batch_state() {
+        let _ = std::fs::remove_file(Self::state_file_path());
+    }
+
     /// Execute a batch queue
     pub async fn execute_batch(&self, batch: &mut BatchQueue) -> Result<Vec<UninstallResult>> {
         let total = batch.items.len();
         tracing::info!("Starting batch uninstall of {} applications", total);
+        // Persist state for resume/rollback (audit §6.2)
+        let _ = Self::persist_batch_state(batch);
 
         let mut results = Vec::new();
 
@@ -435,6 +459,7 @@ impl GreekAppService {
         });
 
         tracing::info!("Batch uninstall completed");
+        Self::clear_batch_state();
 
         Ok(results)
     }

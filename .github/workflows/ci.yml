@@ -185,11 +185,59 @@ jobs:
         if-no-files-found: error
 
     # Regression floor, raised as coverage grows (target: 80%+).
-    # 20% is the cross-platform floor; per-OS coverage differs because
-    # platform-gated modules (registry, WMI, recycle bin) are excluded
-    # from the Linux instrumented build.
+    # 40% is the cross-platform floor after integration + fuzz scaffolding;
+    # per-OS coverage differs because platform-gated modules are excluded
+    # from the Linux instrumented build. Raise to 60 after more tests land.
     - name: Enforce coverage floor
-      run: cargo llvm-cov report --fail-under-lines 20
+      run: cargo llvm-cov report --fail-under-lines 40
+
+  docs-audit:
+    name: Documentation audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      with:
+        persist-credentials: false
+    - name: Check required docs exist
+      run: |
+        set -e
+        for f in SECURITY.md docs/SECURITY.md docs/ARCHITECTURE.md docs/CI_CD.md docs/RELEASING.md CONTRIBUTING.md CHANGELOG.md; do
+          if [ ! -f "$f" ]; then echo "Missing required doc: $f"; exit 1; fi
+          echo "OK $f"
+        done
+        echo "All required docs present"
+    - name: Check docs contain required sections
+      run: |
+        grep -q "Threat Model" SECURITY.md || (echo "SECURITY.md missing Threat Model"; exit 1)
+        grep -q "Architecture" docs/ARCHITECTURE.md || (echo "ARCHITECTURE missing"; exit 1)
+
+  fuzz:
+    name: Fuzz smoke (30s per target)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      with:
+        persist-credentials: false
+    - name: Install Rust nightly (for cargo-fuzz)
+      uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1 stable
+      with:
+        toolchain: nightly
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@a95ba195448af2da9b00fb742d14ffaaf3c21f43 # v2.7.0
+    - name: Install cargo-fuzz
+      run: cargo install cargo-fuzz --locked
+    - name: Fuzz parse_command (30s)
+      run: cargo fuzz run parse_command -- -max_total_time=30 -max_len=128
+      working-directory: fuzz
+    - name: Fuzz protected_path (30s)
+      run: cargo fuzz run protected_path -- -max_total_time=30 -max_len=128
+      working-directory: fuzz
 
   doc:
     name: Rustdoc

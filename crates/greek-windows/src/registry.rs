@@ -50,23 +50,31 @@ impl WindowsRegistryScanner {
     ) -> Result<Vec<InstalledApp>, ScanError> {
         let mut apps = Vec::new();
 
-        let uninstall_path = if is_64bit {
-            UNINSTALL_PATH_NATIVE
+        // Use WOW64 flags to get correct view (native path always, flags select view)
+        // This handles both HKLM and HKCU correctly, including HKCU\Wow6432Node case.
+        let flags = if is_64bit {
+            KEY_READ | KEY_WOW64_64KEY
         } else {
-            UNINSTALL_PATH_WOW64
+            KEY_READ | KEY_WOW64_32KEY
         };
         let root_key = match hive {
             RegistryHive::Hklm => HKEY_LOCAL_MACHINE,
             RegistryHive::Hkcu => HKEY_CURRENT_USER,
         };
 
-        let uninstall_key = match RegKey::predef(root_key).open_subkey(uninstall_path) {
-            Ok(key) => key,
-            Err(e) => {
-                tracing::warn!("Failed to open uninstall key for {:?}: {}", hive, e);
-                return Ok(apps);
-            }
-        };
+        let uninstall_key =
+            match RegKey::predef(root_key).open_subkey_with_flags(UNINSTALL_PATH_NATIVE, flags) {
+                Ok(key) => key,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to open uninstall key for {:?} ({}-bit): {}",
+                        hive,
+                        if is_64bit { 64 } else { 32 },
+                        e
+                    );
+                    return Ok(apps);
+                }
+            };
 
         for subkey_name in uninstall_key.enum_keys() {
             let subkey_name = match subkey_name {

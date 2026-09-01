@@ -19,6 +19,19 @@ use std::io;
 
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
+    // Structured logging for TUI (file JSON + stderr; stdout reserved for TUI)
+    let _log_guard = greek_common::logging::init_logging(false)
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to init logging: {}", e))?;
+    greek_common::logging::prune_old_logs(14);
+    tracing::info!("reek-tui starting");
+
+    // Graceful shutdown: ensure terminal is restored even on panic (audit §6.1)
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        original_hook(info);
+    }));
 
     let config_manager = ConfigManager::new()?;
     let config = config_manager.load_config()?;
