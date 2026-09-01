@@ -124,6 +124,7 @@ impl WindowsRegistryScanner {
             return None;
         }
 
+        let app_name_clone = name.clone();
         let mut app = InstalledApp::new(
             name,
             InstallSource::Registry {
@@ -174,7 +175,7 @@ impl WindowsRegistryScanner {
         }
 
         // Check if system component: accept both REG_DWORD 1 and REG_SZ "1"
-        app.is_system_component = key
+        let is_system_reg = key
             .get_value::<u32, _>("SystemComponent")
             .ok()
             .map(|v| v == 1)
@@ -184,6 +185,51 @@ impl WindowsRegistryScanner {
                     .map(|s| s.trim() == "1")
             })
             .unwrap_or(false);
+
+        // Also check WindowsInstaller flag — many MSI system components hide via this
+        // but we only treat it as system if the name matches OS-critical patterns
+        // to avoid hiding normal MSI apps like Office.
+        let is_windows_installer = key
+            .get_value::<u32, _>("WindowsInstaller")
+            .ok()
+            .map(|v| v == 1)
+            .unwrap_or(false);
+
+        // ReleaseType == "Security Update"/"Update"/"Hotfix" => OS servicing
+        let release_type = key
+            .get_value::<String, _>("ReleaseType")
+            .ok()
+            .map(|s| s.to_lowercase());
+
+        let is_update_release = release_type
+            .as_deref()
+            .map(|rt| {
+                rt.contains("security update")
+                    || rt.contains("hotfix")
+                    || rt == "update"
+            })
+            .unwrap_or(false);
+
+        // Name-based OS-critical heuristic (runtimes, SDKs, drivers, etc.)
+        let is_critical_name = greek_common::constants::is_os_critical_name(&app_name_clone);
+        // Inbox default apps (Clock, Calendar, Snipping Tool, Calculator, etc.)
+        // Only hide if publisher looks Microsoft-ish to avoid false positives like Notepad++.
+        let publisher_for_inbox = key
+            .get_value::<String, _>("Publisher")
+            .ok()
+            .map(|p| greek_common::clean_publisher_name(&p));
+        let is_inbox_default = greek_common::constants::is_inbox_default_app(
+            &app_name_clone,
+            publisher_for_inbox.as_deref(),
+        );
+
+        // ParentKeyName present often indicates a child component of a parent app (e.g. VS components)
+        // We do NOT auto-hide purely on ParentKeyName, but if combined with critical name we hide.
+        app.is_system_component = is_system_reg
+            || is_update_release
+            || is_critical_name
+            || is_inbox_default
+            || (is_windows_installer && is_critical_name);
 
         // Store registry key information
         let registry_key = self.extract_registry_key(key, subkey_name, hive);

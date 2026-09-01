@@ -10,8 +10,12 @@ import { Skeleton } from "./components/Skeleton";
 import { Toast } from "./components/Toast";
 import { SystemStatsBar } from "./components/SystemStatsBar";
 import { AppDetailsDrawer } from "./components/AppDetailsDrawer";
+import { VideoVault } from "./components/VideoVault";
+import { DevCleaner } from "./components/DevCleaner";
+import { SuccessTickDialog } from "./components/SuccessTickDialog";
 import { useAppStore } from "./store/useAppStore";
 import { scanApplications, uninstallApplications, onUninstallProgress, getAppResources, type AppResourceDto } from "./lib/tauri";
+import { Film, Package, LayoutGrid } from "lucide-react";
 
 export default function App() {
   const {
@@ -23,6 +27,8 @@ export default function App() {
   const [toast, setToast] = useState<string>("");
   const [detailId, setDetailId] = useState<string | null>(null);
   const [resMap, setResMap] = useState<Record<string, AppResourceDto>>({});
+  const [section, setSection] = useState<"apps" | "movies" | "dev">("apps");
+  const [success, setSuccess] = useState<{ title: string; subtitle?: string; details?: string } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -109,6 +115,8 @@ export default function App() {
       const res = await uninstallApplications({ ids: Array.from(selected), force });
       setResults(res);
       setView("results");
+      const ok = res.filter(r=>r.success).length;
+      if (ok>0) setSuccess({ title: "Uninstalled Successfully", subtitle: `${ok} application${ok>1?"s":""} removed`, details: `${ok} removed • ${res.length - ok} failed` });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setToast(msg);
@@ -226,8 +234,35 @@ export default function App() {
 
             {view === "dashboard" && (
               <>
-                <SearchBar value={search} onChange={setSearch} count={filtered.length} />
-                {loading ? <Skeleton /> : <AppTable apps={filtered} onDetails={setDetailId} />}
+                {/* Section tabs — Apps / Movies / Dev Cleaner */}
+                <div className="flex items-center gap-2 p-1 rounded-full bg-[#0A0A0A] border border-[rgba(225,29,72,0.08)] w-fit">
+                  <button onClick={()=>setSection("apps")} className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold transition ${section==="apps" ? "bg-[#E11D48] text-white shadow-[0_0_12px_rgba(225,29,72,0.3)]" : "text-[#A8A39E] hover:text-white"}`}>
+                    <LayoutGrid size={14}/> Apps {section==="apps" && `• ${filtered.length}`}
+                  </button>
+                  <button onClick={()=>setSection("movies")} className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold transition ${section==="movies" ? "bg-[#E11D48] text-white shadow-[0_0_12px_rgba(225,29,72,0.3)]" : "text-[#A8A39E] hover:text-white"}`}>
+                    <Film size={14}/> Movies
+                  </button>
+                  <button onClick={()=>setSection("dev")} className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold transition ${section==="dev" ? "bg-[#C9A84C] text-black shadow-[0_0_12px_rgba(201,168,76,0.3)]" : "text-[#A8A39E] hover:text-white"}`}>
+                    <Package size={14}/> Dev Cleaner
+                  </button>
+                </div>
+
+                {section==="apps" && (
+                  <>
+                    <SearchBar value={search} onChange={setSearch} count={filtered.length} />
+                    {loading ? <Skeleton /> : <AppTable apps={filtered} onDetails={setDetailId} />}
+                  </>
+                )}
+                {section==="movies" && (
+                  <VideoVault onDeleted={(n)=> setSuccess({ title: "Videos Deleted", subtitle: `${n} video${n>1?"s":""} moved to recycle bin`, details: "UPI-style success — you can restore from Recycle Bin" })} />
+                )}
+                {section==="dev" && (
+                  <DevCleaner onCleaned={(c,b)=> {
+                    const mib = b/1024/1024;
+                    const disp = mib>=1024 ? `${(mib/1024).toFixed(2)} GiB` : `${mib.toFixed(1)} MiB`;
+                    setSuccess({ title: "Dev Artifacts Purged", subtitle: `${c} modules cleaned • ${disp} reclaimed`, details: "node_modules, target, venv, dist — reinstall via npm/pip/cargo" });
+                  }} />
+                )}
               </>
             )}
 
@@ -242,9 +277,11 @@ export default function App() {
         </div>
       </main>
 
-      {view === "dashboard" && (
+      {view === "dashboard" && section==="apps" && (
         <ActionBar count={selected.size} onUninstall={() => setShowConfirm(true)} onClear={clearSelection} />
       )}
+
+      <SuccessTickDialog open={!!success} title={success?.title ?? ""} subtitle={success?.subtitle} details={success?.details} onClose={()=>setSuccess(null)} />
 
       {showConfirm && (
         <ConfirmModal

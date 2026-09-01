@@ -10,15 +10,17 @@ on GitHub Actions.
 push / pull_request (main | develop)
                 │
                 ▼
-   ┌──────┬──────┬──────────┬─────────┬─────────┬──────────┬─────────┬──────────┐
-   ▼      ▼      ▼          ▼         ▼         ▼          ▼         ▼          ▼
-[1] Check [2] MSRV [3] Security [4] Build [5] Doc [6] Coverage [7] DocsAudit [8] Fuzz
-fmt/clippy cargo check cargo-audit cargo build cargo doc cargo-llvm-cov required files fuzz 30s
-/test   1.88.0   cargo-deny  --release                   floor 40% SECURITY etc 2 targets
+   ┌──────┬──────┬──────────┬─────────┬─────────┬──────────┬─────────┬──────────┬──────────────┐
+   ▼      ▼      ▼          ▼         ▼         ▼          ▼         ▼          ▼              ▼
+[1] Check [2] MSRV [3] Security [4] Build [5] Doc [6] Coverage [7] DocsAudit [8] Fuzz [9] Frontend [10] Tauri
+fmt/clippy cargo check cargo-audit cargo build cargo doc cargo-llvm-cov required files fuzz 30s  npm ci/build  cli --version
+/test   1.88.0   cargo-deny  --release                   floor 40% SECURITY etc 2 targets  ubuntu/win/mac  ubuntu
 ubuntu/win/mac          ubuntu  3 targets ubuntu ubuntu    ubuntu     ubuntu(nightly)
 ```
 
-Release pipeline lives separately in `.github/workflows/release.yml` (trigger: `v*.*.*` tag) — see [RELEASING.md](RELEASING.md).
+Release pipeline lives separately in `.github/workflows/release.yml` (trigger: `v*.*.*` tag) — builds both **cargo** binaries and **Tauri updater artifacts** (`latest.json` + `.sig`), publishes to GitHub Releases for auto-update. See [RELEASING.md](RELEASING.md) and [AUTO_UPDATE.md](AUTO_UPDATE.md).
+
+**Documents & images are never auto-deleted:** `EXCLUDED_DOC_IMAGE_EXTS` (`pdf, doc, ppt, xlsx, jpg, png…`) is enforced in every filesystem/junk/duplicate scanner, even if filename contains the app token. Movies vault is opt-in with video-only allowlist (34 exts).
 
 ## Jobs
 
@@ -154,6 +156,33 @@ Then update `uses: <owner>/<repo>@<sha> # <tag>` and keep the SHA and comment
 consistent. Recommended: enable GitHub Dependabot for
 `github-actions` and `cargo` ecosystems (see `.github/dependabot.yml` if present).
 
+### 9. `frontend` — Vite + TS build (added 2026-09)
+
+Runs inside the `check` job after cargo cache (on ubuntu/win/macos matrix):
+
+| Step | Command | Purpose |
+|------|---------|---------|
+| Setup Node | `actions/setup-node@v4` `node 20` + `cache: npm` | Frontend toolchain |
+| Install deps | `npm ci` | Reproducible install from `package-lock.json` |
+| Build | `npm run build` (`tsc && vite build`) | Type-check + production bundle (`dist/`) — fails on TS errors |
+| Tauri CLI | `npx --yes @tauri-apps/cli@latest --version` | Validates `src-tauri/tauri.conf.json` + updater config |
+
+Ensures the desktop UI (Movies vault, Dev Cleaner, SuccessTickDialog) compiles on all OSes before merge.
+
+### 10. `tauri` — Updater artifacts (release only)
+
+Runs only on tag push `v*.*.*` in `.github/workflows/release.yml` (matrix `ubuntu-latest`, `windows-latest`, `macos-latest`):
+
+| Step | Tool | Purpose |
+|------|------|---------|
+| Setup Node + Rust | `actions/setup-node` + `dtolnay/rust-toolchain` | Toolchain |
+| Install deps | `npm ci` | Frontend |
+| Linux deps | `apt-get install libwebkit2gtk-4.1-dev …` | WebKit for Tauri on Linux |
+| Build Tauri | `tauri-apps/tauri-action@v0` `args: ""` (or `--target aarch64-apple-darwin` on macOS) + `TAURI_SIGNING_PRIVATE_KEY` from secrets | Produces `src-tauri/target/release/bundle/**/*` (`*.msi`, `*.exe`, `*.dmg`, `*.AppImage`) + `latest.json` + `.sig` |
+| Upload | `actions/upload-artifact` `tauri-bundle-${os}` | Saved for `release` job to attach to GitHub Release |
+
+The `release` job then downloads both `reek-<target>` (cargo SBOM) and `tauri-bundle-*` artifacts and publishes them together with `latest.json` to GitHub Releases. The endpoint `https://github.com/Rohithdgrr/REEK-uninstaller/releases/latest/download/latest.json` is what the app polls — see `docs/AUTO_UPDATE.md`.
+
 ## Local equivalent (Makefile)
 
 Run the same gates locally without GitHub:
@@ -162,8 +191,15 @@ Run the same gates locally without GitHub:
 make ci        # test + clippy + fmt-check (everything the check job runs)
 make fmt-check # formatting only
 make clippy    # clippy with -D warnings
+npm ci && npm run build   # frontend (also runs in CI check job)
+npx @tauri-apps/cli --version  # Tauri config check
 ```
 
 ## Releases
 
-Releases are cut from `main` via git tags (see `docs/RELEASING.md`). Tag `v0.1.0` triggers `.github/workflows/release.yml` which builds, SBOMs, attests (OIDC/SLSA), and publishes to GitHub Releases. See `packaging/homebrew`, `packaging/winget`, `packaging/aur` for downstream recipes.
+Releases are cut from `main` via git tags (see `docs/RELEASING.md` and `docs/AUTO_UPDATE.md`). Tag `v0.1.0` triggers `.github/workflows/release.yml` which does **two builds in parallel**:
+
+1. `build` — `cargo build --release` per target + SBOM (`cargo auditable`) + `SHA256SUMS` + OIDC attestations.
+2. `tauri` — `tauri-action` builds the desktop app + updater artifacts (`latest.json`, `.sig`, `.msi/.dmg`) using `TAURI_SIGNING_PRIVATE_KEY` secret.
+
+Both artifact sets are merged in the `release` job (`actions/download-artifact` `merge-multiple: true`) and published together via `softprops/action-gh-release` (`files: dist/**/*`). The `latest.json` URL is the auto-update endpoint. See `packaging/homebrew`, `packaging/winget`, `packaging/aur` for downstream recipes.

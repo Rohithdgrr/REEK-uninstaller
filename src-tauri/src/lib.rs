@@ -199,9 +199,11 @@ pub struct LeftoverDto {
     pub id: String,
     pub artifact_type: String,
     pub path: String,
+    pub size_bytes: Option<u64>,
     pub size_display: Option<String>,
     pub confidence: f32,
     pub safety: String,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,6 +217,30 @@ pub struct AppResourceDto {
     pub gpu: f32,
     pub vram_bytes: u64,
     pub exe_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoEntryDto {
+    pub id: String,
+    pub path: String,
+    pub name: String,
+    pub extension: String,
+    pub size_bytes: u64,
+    pub size_display: String,
+    pub drive: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DevModuleDto {
+    pub id: String,
+    pub path: String,
+    pub name: String,
+    pub kind: String,
+    pub language: String,
+    pub size_bytes: u64,
+    pub size_display: String,
+    pub file_count: usize,
+    pub drive: String,
 }
 
 // ---------- Helpers ----------
@@ -263,7 +289,7 @@ async fn real_scan() -> Result<Vec<InstalledApp>, String> {
 // ---------- Commands ----------
 #[tauri::command]
 async fn scan_applications(registry: State<'_, AppRegistry>) -> Result<Vec<AppEntry>, String> {
-    let apps = match real_scan().await {
+    let mut apps = match real_scan().await {
         Ok(v) if !v.is_empty() => v,
         Ok(empty) => {
             if cfg!(target_os = "windows") {
@@ -276,6 +302,13 @@ async fn scan_applications(registry: State<'_, AppRegistry>) -> Result<Vec<AppEn
             mock_apps()
         }
     };
+    // Defense-in-depth: hide OS-critical apps even if service cache is bypassed
+    // (e.g. mock fallback). Mirrors filter in GreekAppService::scan_all_apps.
+    let before = apps.len();
+    apps.retain(|a| a.is_safe_to_show());
+    if before != apps.len() {
+        eprintln!("[scan] filtered {} OS-critical apps (showing {})", before - apps.len(), apps.len());
+    }
     {
         let mut map = registry.0.lock().map_err(|e| format!("lock {e}"))?;
         map.clear();
@@ -328,9 +361,11 @@ async fn analyze_leftovers(registry: State<'_, AppRegistry>, id: String) -> Resu
             id: a.id.to_string(),
             artifact_type: format!("{:?}", a.artifact_type),
             path: a.path.to_string_lossy().to_string(),
+            size_bytes: a.size_bytes,
             size_display,
             confidence: a.confidence,
             safety: format!("{:?}", a.safety_level),
+            description: Some(a.description.clone()),
         }
     }).collect())
 }
@@ -347,9 +382,16 @@ async fn uninstall_applications(
         let map = registry.0.lock().map_err(|e| format!("lock {e}"))?;
         let mut out = Vec::new();
         for id in &payload.ids {
-            if let Some(a) = map.get(id) { out.push(a.clone()); } else { eprintln!("[uninstall] missing {id}"); }
+            if let Some(a) = map.get(id) {
+                // Block OS-critical uninstalls even if user somehow selected them
+                if a.is_os_critical() {
+                    eprintln!("[uninstall] blocked OS-critical app: {}", a.name);
+                    continue;
+                }
+                out.push(a.clone());
+            } else { eprintln!("[uninstall] missing {id}"); }
         }
-        if out.is_empty() { return Err("Selected apps not found. Please re-scan.".into()); }
+        if out.is_empty() { return Err("Selected apps not found or are OS-critical and cannot be removed.".into()); }
         out
     };
     use greek_common::{GreekConfig, UninstallOptions};
@@ -561,12 +603,72 @@ async fn get_app_resource(registry: State<'_, AppRegistry>, id: String) -> Resul
     Ok(resource_for_app(&app, &stats))
 }
 
+#[tauri::command]
+async fn scan_videos() -> Result<Vec<VideoEntryDto>, String> {
+    use greek_core::video::VideoScanner;
+    let scanner = VideoScanner::new();
+    let entries = scanner.scan_all().await.map_err(|e| e.to_string())?;
+    Ok(entries.into_iter().map(|v| VideoEntryDto {
+        id: v.id.to_string(),
+        path: v.path.to_string_lossy().to_string(),
+        name: v.name,
+        extension: v.extension,
+        size_bytes: v.size_bytes,
+        size_display: v.size_display,
+        drive: v.drive,
+    }).collect())
+}
+
+#[tauri::command]
+async fn delete_videos(paths: Vec<String>) -> Result<Vec<String>, String> {
+    use greek_core::video::VideoScanner;
+    let scanner = VideoScanner::new();
+    let pbs: Vec<std::path::PathBuf> = paths.into_iter().map(std::path::PathBuf::from).collect();
+    scanner.delete_videos(pbs).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn scan_dev_modules() -> Result<Vec<DevModuleDto>, String> {
+    use greek_core::dev_modules::DevModulesScanner;
+    let scanner = DevModulesScanner::new();
+    let entries = scanner.scan_all().await.map_err(|e| e.to_string())?;
+    Ok(entries.into_iter().map(|m| DevModuleDto {
+        id: m.id.to_string(),
+        path: m.path.to_string_lossy().to_string(),
+        name: m.name,
+        kind: m.kind.as_str().to_string(),
+        language: m.language,
+        size_bytes: m.size_bytes,
+        size_display: m.size_display,
+        file_count: m.file_count,
+        drive: m.drive,
+    }).collect())
+}
+
+#[tauri::command]
+async fn clean_dev_modules(paths: Vec<String>) -> Result<Vec<String>, String> {
+    use greek_core::dev_modules::DevModulesScanner;
+    let scanner = DevModulesScanner::new();
+    let pbs: Vec<std::path::PathBuf> = paths.into_iter().map(std::path::PathBuf::from).collect();
+    scanner.delete_modules(pbs).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn clean_all_dev_modules() -> Result<Vec<String>, String> {
+    use greek_core::dev_modules::DevModulesScanner;
+    let scanner = DevModulesScanner::new();
+    let entries = scanner.scan_all().await.map_err(|e| e.to_string())?;
+    let paths: Vec<std::path::PathBuf> = entries.into_iter().map(|e| e.path).collect();
+    scanner.delete_modules(paths).await.map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppRegistry(Mutex::new(HashMap::new())))
-        .invoke_handler(tauri::generate_handler![scan_applications, get_app_details, get_system_stats, analyze_leftovers, uninstall_applications, get_app_icon, get_app_resources, get_app_resource])
+        .invoke_handler(tauri::generate_handler![scan_applications, get_app_details, get_system_stats, analyze_leftovers, uninstall_applications, get_app_icon, get_app_resources, get_app_resource, scan_videos, delete_videos, scan_dev_modules, clean_dev_modules, clean_all_dev_modules])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -14,6 +14,8 @@ pub mod task_scheduler;
 pub mod uninstaller;
 pub mod utils;
 pub mod windows_features;
+pub mod video;
+pub mod dev_modules;
 
 pub use app_service::*;
 pub use backup::*;
@@ -25,3 +27,5 @@ pub use task_scheduler::*;
 pub use uninstaller::*;
 pub use utils::*;
 pub use windows_features::*;
+pub use video::*;
+pub use dev_modules::*;

@@ -54,20 +54,31 @@ impl GreekAppService {
             scanner_manager.register_scanner(Box::new(PortableAppScanner::new(scan_dirs)));
         }
 
-        // Register filesystem leftover analyzer
+        // Register filesystem leftover analyzer - comprehensive: all drives, Program Files, Users/AppData, Windows (shallow)
         {
-            use crate::leftover::FileSystemLeftoverAnalyzer;
-            use std::path::PathBuf;
+            use crate::leftover::{build_comprehensive_scan_roots, FileSystemLeftoverAnalyzer};
 
-            let common_dirs = vec![
-                PathBuf::from("C:\\ProgramData"),
-                PathBuf::from(
-                    std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users".to_string()),
-                ),
-            ];
-
+            // Use comprehensive roots (all drives + Program Files + AppData per user + ProgramData + Windows shallow)
+            let comprehensive = build_comprehensive_scan_roots();
+            tracing::info!("Registering filesystem leftover analyzer with {} roots: {:?}", comprehensive.len(), comprehensive);
             leftover_analyzer_manager
-                .register_analyzer(Box::new(FileSystemLeftoverAnalyzer::new(common_dirs)));
+                .register_analyzer(Box::new(FileSystemLeftoverAnalyzer::new(comprehensive)));
+        }
+
+        // Register whole-device analyzers: registry, junk/temp, services, tasks, shortcuts, duplicate downloads
+        #[cfg(all(target_os = "windows", feature = "windows"))]
+        {
+            use crate::leftover::{
+                DuplicateDownloadAnalyzer, JunkLeftoverAnalyzer, RegistryLeftoverAnalyzer,
+                ServiceLeftoverAnalyzer, ShortcutLeftoverAnalyzer, TaskLeftoverAnalyzer,
+            };
+            leftover_analyzer_manager.register_analyzer(Box::new(RegistryLeftoverAnalyzer::new()));
+            leftover_analyzer_manager.register_analyzer(Box::new(JunkLeftoverAnalyzer::new()));
+            leftover_analyzer_manager.register_analyzer(Box::new(ServiceLeftoverAnalyzer::new()));
+            leftover_analyzer_manager.register_analyzer(Box::new(TaskLeftoverAnalyzer::new()));
+            leftover_analyzer_manager.register_analyzer(Box::new(ShortcutLeftoverAnalyzer::new()));
+            leftover_analyzer_manager.register_analyzer(Box::new(DuplicateDownloadAnalyzer::new()));
+            tracing::info!("Registered registry/junk/service/task/shortcut/duplicate leftover analyzers");
         }
 
         tracing::info!(
@@ -139,7 +150,7 @@ impl GreekAppService {
             .map_err(|e| GreekError::ScanError(e.to_string()))?;
 
         // Enrich apps: extract real icons, compute dominant colors, fill missing sizes
-        let apps = tokio::task::spawn_blocking(move || {
+        let mut apps = tokio::task::spawn_blocking(move || {
             #[cfg(all(target_os = "windows", feature = "windows"))]
             {
                 let extractor = IconExtractor::new();
@@ -154,12 +165,28 @@ impl GreekAppService {
         .await
         .map_err(|e| GreekError::ScanError(format!("Task join error: {}", e)))?;
 
+        // Filter OS-critical / system-bundled apps: only show safely removable apps.
+        // This is the user-requested default — apps whose removal could brick the OS,
+        // drivers, or Windows itself are hidden. The registry/store scanners already
+        // mark most of these via `is_system_component`, but this is the final safety net
+        // (covers portable / package-manager sources and name-heuristic matches).
+        let total_before_filter = apps.len();
+        apps.retain(|a| a.is_safe_to_show());
+        let filtered = total_before_filter.saturating_sub(apps.len());
+        if filtered > 0 {
+            tracing::info!(
+                "Filtered {} OS-critical/system apps (showing {} safe-to-remove)",
+                filtered,
+                apps.len()
+            );
+        }
+
         let _ = self.event_sender.send(AppEvent::ScanCompleted {
             scanner_id: "all".to_string(),
             count: apps.len(),
         });
 
-        tracing::info!("System scan completed, found {} applications", apps.len());
+        tracing::info!("System scan completed, found {} applications ({} filtered as OS-critical)", apps.len(), filtered);
 
         // MED-1: cache the results
         self.app_cache = Some((apps.clone(), Instant::now()));
@@ -182,6 +209,14 @@ impl GreekAppService {
         app: &InstalledApp,
         options: UninstallOptions,
     ) -> Result<UninstallResult> {
+        // Safety: refuse to uninstall OS-critical apps
+        if app.is_os_critical() {
+            tracing::error!("Blocked uninstall of OS-critical app: {}", app.name);
+            return Err(GreekError::SafetyError(format!(
+                "Refusing to uninstall OS-critical application '{}' — removal could break the operating system or drivers.",
+                app.name
+            )));
+        }
         tracing::info!("Starting uninstall for: {}", app.name);
 
         let _ = self.event_sender.send(AppEvent::UninstallStarted {

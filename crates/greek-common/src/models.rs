@@ -100,6 +100,48 @@ impl InstalledApp {
         }
     }
 
+    /// Whether this app is OS-critical and should be hidden by default.
+    /// Checks the `is_system_component` flag plus name-based heuristics.
+    pub fn is_os_critical(&self) -> bool {
+        if self.is_system_component {
+            return true;
+        }
+        if crate::constants::is_os_critical_name(&self.name) {
+            return true;
+        }
+        // Store-specific check
+        if let InstallSource::WindowsStore { .. } = &self.source {
+            if crate::constants::is_os_critical_store_package(&self.name) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Whether this app is a default inbox app (Clock, Calendar, Snipping Tool, etc.)
+    /// that is bundled with Windows and should be hidden by default.
+    pub fn is_inbox_default(&self) -> bool {
+        if crate::constants::is_inbox_default_app(&self.name, self.publisher.as_deref()) {
+            return true;
+        }
+        // For Store apps, also check the package name against the store blocklist
+        if let InstallSource::WindowsStore { .. } = &self.source {
+            if crate::constants::is_os_critical_store_package(&self.name) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Convenience: is this app safe to show to the user as deletable?
+    /// Returns false for both OS-critical (drivers, runtimes) and inbox
+    /// defaults (Clock, Calendar, Snipping Tool, Calculator, etc.).
+    /// Only truly external, user-installed apps (Chrome, Office, Docker, etc.)
+    /// return true.
+    pub fn is_safe_to_show(&self) -> bool {
+        !self.is_os_critical() && !self.is_inbox_default()
+    }
+
     pub fn display_name(&self) -> String {
         if let Some(ref version) = self.version {
             format!("{} {}", self.name, version)
@@ -256,6 +298,83 @@ pub enum ArtifactType {
     Shortcut,
     Font,
     TempFile,
+    Video,
+    DevModule,
+}
+
+/// Video file entry found during whole-device scan
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoEntry {
+    pub id: Uuid,
+    pub path: PathBuf,
+    pub name: String,
+    pub extension: String,
+    pub size_bytes: u64,
+    pub size_display: String,
+    pub modified: Option<chrono::NaiveDateTime>,
+    pub drive: String,
+}
+
+/// Dev language module / build artifact entry (node_modules, venv, target, dist, etc.)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DevModuleEntry {
+    pub id: Uuid,
+    pub path: PathBuf,
+    pub name: String,              // folder name e.g. "node_modules"
+    pub kind: DevModuleKind,
+    pub language: String,          // "Node", "Python", "Rust", etc.
+    pub size_bytes: u64,
+    pub size_display: String,
+    pub file_count: usize,
+    pub drive: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DevModuleKind {
+    NodeModules,
+    PythonVenv,
+    PythonCache,
+    RustTarget,
+    JavaTarget,
+    GradleCache,
+    NextBuild,
+    Dist,
+    Build,
+    Vendor,
+    Unknown,
+}
+
+impl DevModuleKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DevModuleKind::NodeModules => "node_modules",
+            DevModuleKind::PythonVenv => "python-venv",
+            DevModuleKind::PythonCache => "python-cache",
+            DevModuleKind::RustTarget => "rust-target",
+            DevModuleKind::JavaTarget => "java-target",
+            DevModuleKind::GradleCache => "gradle-cache",
+            DevModuleKind::NextBuild => "next-build",
+            DevModuleKind::Dist => "dist",
+            DevModuleKind::Build => "build",
+            DevModuleKind::Vendor => "vendor",
+            DevModuleKind::Unknown => "unknown",
+        }
+    }
+    pub fn language(&self) -> &'static str {
+        match self {
+            DevModuleKind::NodeModules => "Node.js",
+            DevModuleKind::PythonVenv => "Python",
+            DevModuleKind::PythonCache => "Python",
+            DevModuleKind::RustTarget => "Rust",
+            DevModuleKind::JavaTarget => "Java",
+            DevModuleKind::GradleCache => "Java/Gradle",
+            DevModuleKind::NextBuild => "Node/Next",
+            DevModuleKind::Dist => "JS/TS",
+            DevModuleKind::Build => "Build",
+            DevModuleKind::Vendor => "PHP/Go",
+            DevModuleKind::Unknown => "Unknown",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]

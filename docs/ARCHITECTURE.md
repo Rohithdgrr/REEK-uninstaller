@@ -73,6 +73,15 @@ Non-Windows compilation is handled via feature + OS gating in the dependants:
 #[cfg(all(target_os = "windows", feature = "windows"))]
 ```
 
+### New modules (desktop app)
+
+- `video.rs` (`crates/greek-core/src/video.rs`) — `VideoScanner`: whole-device scan for videos (34 exts `mp4, mkv, avi…`), roots `C:\Users\*\Videos|Downloads` + every drive `D:\Movies`, depth-limited `WalkDir`, `>1 MiB`, `is_protected_path` skip, dedup + size sort. Used by Tauri `scan_videos`/`delete_videos`. **Excludes** `EXCLUDED_DOC_IMAGE_EXTS` (`pdf, doc, ppt, xlsx, jpg, png…`) — never flag documents/images.
+- `dev_modules.rs` (`crates/greek-core/src/dev_modules.rs`) — `DevModulesScanner`: hunts `node_modules`, `target` (Rust/Java), Python `venv/.venv/__pycache__`, `dist/build/out/.next/.nuxt|vendor/.gradle/.parcel-cache` etc. Roots `Documents/Projects/code/dev/workspace` for every user + every drive. `walk_scan` depth 6, `should_skip_dir` avoids `C:\Windows`, `.git`, calculates `size_bytes` + `file_count` via `WalkDir`. One-tap delete via `delete_modules`/`delete_all` (protected-path + known-pattern guard). Tauri `scan_dev_modules`/`clean_dev_modules`.
+- `src-tauri` desktop: React `VideoVault.tsx`, `DevCleaner.tsx`, `SuccessTickDialog.tsx` (UPI green tick), header tabs `Apps|Movies|Dev Cleaner` (`src/App.tsx`). Tauri `plugin-updater` (`tauri.conf.json:plugins.updater`, `createUpdaterArtifacts:true`) for auto-update (see `docs/AUTO_UPDATE.md`).
+
+**Safety: documents & images never deleted**
+`crates/greek-core/src/leftover.rs:EXCLUDED_DOC_IMAGE_EXTS` lists `pdf, doc, docx, ppt, pptx, xls, xlsx, jpg, jpeg, png, gif, bmp, webp, svg, heic…` — every filesystem/junk/duplicate scanner skips `is_excluded_doc_image(path)` even if filename contains app token. Movies vault is explicit opt-in with its own video-only allowlist (`video.rs:VIDEO_EXTS`).
+
 ### greek-platform (scans Linux/macOS)
 
 - `common.rs` — `get_os`, `get_arch`, `is_elevated`, `get_common_app_dirs`.
@@ -120,12 +129,38 @@ GreekAppService::uninstall_app
             └─ delete_registry_key per registry entry
 ```
 
-### Leftover analysis
+### Leftover analysis (whole-device)
 
 ```
-GreekAppService::analyze_leftovers
+GreekAppService::analyze_leftovers  (registers 6 analyzers)
   └─ LeftoverAnalyzerManager::analyze_app
-       └─ per analyzer → Vec<LeftoverArtifact> (SafetyLevel + confidence)
+       ├─ FileSystemLeftoverAnalyzer (all drives Program Files/Users/AppData/Windows, tokenized, accurate dir size)
+       ├─ RegistryLeftoverAnalyzer (HKLM/HKCU Software, Run, Services, Uninstall, Classes)
+       ├─ JunkLeftoverAnalyzer (Windows\Temp, %TEMP%, Prefetch, cache)
+       ├─ ServiceLeftoverAnalyzer (Win32_Service)
+       ├─ TaskLeftoverAnalyzer (Get-ScheduledTask)
+       ├─ ShortcutLeftoverAnalyzer (Start Menu/Desktop *.lnk)
+       └─ DuplicateDownloadAnalyzer (Downloads/Desktop + drive roots, installer exts, safe)
+       └─ → Vec<LeftoverArtifact> (SafetyLevel + confidence, size, grouped by drive in UI)
+       + EXCLUDED_DOC_IMAGE_EXTS guard — never returns .pdf/.doc/.ppt/.xlsx/.jpg/.png etc.
+```
+
+### Video vault (Movies)
+
+```
+Tauri scan_videos → VideoScanner::scan_all (build_roots: Users\Videos|Downloads + every drive Videos/Movies)
+  └─ WalkDir depth 4-6, VIDEO_EXTS filter (mp4, mkv… 34), >1 MiB, is_protected_path skip
+  └─ → Vec<VideoEntry {path,size,drive}> sorted by size desc → VideoVault.tsx grouped by drive
+Tauri delete_videos → VideoScanner::delete_videos (recycle-safe)
+```
+
+### Dev Cleaner (one-click purge)
+
+```
+Tauri scan_dev_modules → DevModulesScanner::scan_all (roots: Documents/Projects/code + every drive)
+  └─ walk_scan depth 6, PATTERNS [node_modules, target, venv, __pycache__, dist, build, .next, vendor, .gradle …]
+  └─ → Vec<DevModuleEntry {path,kind,language,size,file_count,drive}> → DevCleaner.tsx grouped by language
+Tauri clean_dev_modules / clean_all_dev_modules → DevModulesScanner::delete_modules (protected + known-pattern guard)
 ```
 
 ## Feature gates

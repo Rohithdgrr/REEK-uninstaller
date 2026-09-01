@@ -44,6 +44,23 @@ jobs:
       with:
         workspaces: . -> target
 
+    - name: Setup Node
+      uses: actions/setup-node@39370e3970a6d050a480ffad4ff0ed4ea94a6a8 # v4.1.0
+      with:
+        node-version: 20
+        cache: npm
+
+    - name: Install frontend deps
+      run: npm ci
+
+    - name: Check frontend build
+      run: npm run build
+      env:
+        CI: true
+
+    - name: Check Tauri config
+      run: npx --yes @tauri-apps/cli@latest --version
+
     - name: Check formatting
       run: cargo fmt --all -- --check
 

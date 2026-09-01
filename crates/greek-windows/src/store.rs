@@ -80,6 +80,7 @@ impl WindowsStoreScanner {
 
         let is_framework =
             name.starts_with("Microsoft.") && (name.contains("UI") || name.contains("Framework"));
+        let is_os_store = greek_common::constants::is_os_critical_store_package(&name);
 
         let mut app = InstalledApp::new(
             name,
@@ -92,7 +93,7 @@ impl WindowsStoreScanner {
         app.version = version;
         app.publisher = publisher;
         app.install_location = Some(PathBuf::from(install_location));
-        app.is_system_component = is_framework;
+        app.is_system_component = is_framework || is_os_store;
 
         // Find main exe from install location (for process matching)
         let loc = PathBuf::from(install_location);

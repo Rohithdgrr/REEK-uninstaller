@@ -85,9 +85,60 @@ jobs:
         path: dist/${{ matrix.target }}/*
         if-no-files-found: error
 
+  tauri:
+    name: Build Tauri + Updater - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            args: ""
+          - os: windows-latest
+            args: ""
+          - os: macos-latest
+            args: "--target aarch64-apple-darwin"
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+    - name: Setup Node
+      uses: actions/setup-node@39370e3970a6d050a480ffad4ff0ed4ea94a6a8 # v4.1.0
+      with:
+        node-version: 20
+        cache: npm
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1 stable
+      with:
+        toolchain: stable
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@a95ba195448af2da9b00fb742d14ffaaf3c21f43 # v2.7.0
+    - name: Install dependencies (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev
+    - name: Install frontend deps
+      run: npm ci
+    - name: Build Tauri app + Updater artifacts
+      uses: tauri-apps/tauri-action@d65b0d33bffd9f0473d8667a1e40b1d8dc34d797 # v0.5.17
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      with:
+        args: ${{ matrix.args }}
+    - name: Upload Tauri bundle + updater JSON
+      uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+      with:
+        name: tauri-bundle-${{ matrix.os }}
+        path: |
+          src-tauri/target/release/bundle/**/*
+          src-tauri/target/**/bundle/**/*
+        if-no-files-found: warn
+
   release:
     name: Create GitHub Release
-    needs: build
+    needs: [build, tauri]
     runs-on: ubuntu-latest
     permissions:
       contents: write
