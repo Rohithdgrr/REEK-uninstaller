@@ -31,7 +31,7 @@ indexmap = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
-directories = "5.0.1"
+directories = "6.0.0"
 atty = "0.2"
 humansize = "2.1.3"
 
