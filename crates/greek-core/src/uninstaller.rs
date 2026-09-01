@@ -294,7 +294,7 @@ impl UninstallStrategy for MsiUninstallStrategy {
     fn can_handle(&self, app: &InstalledApp) -> bool {
         app.uninstall_string
             .as_ref()
-            .map(|s| s.contains("MsiExec") || s.contains("msiexec"))
+            .map(|s| s.to_lowercase().contains("msiexec"))
             .unwrap_or(false)
     }
 
@@ -387,17 +387,17 @@ impl UninstallStrategy for MsiUninstallStrategy {
 
 impl MsiUninstallStrategy {
     fn extract_product_code(&self, app: &InstalledApp) -> Result<String> {
+        use std::sync::OnceLock;
+        static MSI_RE: OnceLock<regex::Regex> = OnceLock::new();
+        let re = MSI_RE.get_or_init(|| {
+            regex::Regex::new(
+                r"\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}",
+            )
+            .expect("valid MSI regex")
+        });
+
         let uninstall_string = app.uninstall_string.as_ref().ok_or_else(|| {
             GreekError::UninstallError(UninstallError::NoStrategyFound.to_string())
-        })?;
-
-        // Extract GUID from uninstall string
-        // MSI GUIDs look like: {XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}
-        let re = regex::Regex::new(
-            r"\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}",
-        )
-        .map_err(|e| {
-            GreekError::UninstallError(UninstallError::ExecutionFailed(e.to_string()).to_string())
         })?;
 
         if let Some(captures) = re.captures(uninstall_string) {
@@ -545,18 +545,32 @@ impl ForceRemoveStrategy {
     async fn kill_processes_by_path(&self, path: &std::path::Path) -> Result<usize> {
         use sysinfo::System;
 
+        fn norm(s: &str) -> String {
+            s.to_lowercase()
+                .replace('\\', "/")
+                .trim_end_matches('/')
+                .to_string()
+        }
+        // Reuse one System instance per call; refresh only processes
         let mut system = System::new_all();
         system.refresh_all();
 
         let mut killed_count = 0;
-        let path_str = path.to_string_lossy().to_lowercase();
+        let path_norm = norm(&path.to_string_lossy());
 
         for (pid, process) in system.processes() {
             if let Some(exe_path) = process.exe() {
-                let exe_str = exe_path.to_string_lossy().to_lowercase();
-                if exe_str.starts_with(&path_str) && process.kill() {
+                let exe_norm = norm(&exe_path.to_string_lossy());
+                let is_child =
+                    exe_norm == path_norm || exe_norm.starts_with(&(path_norm.clone() + "/"));
+                if is_child && process.kill() {
                     killed_count += 1;
-                    tracing::info!("Killed process: {} ({})", pid, exe_str);
+                    // Cap log length to avoid leaking long paths
+                    tracing::info!(
+                        "Killed process: {} ({})",
+                        pid,
+                        &exe_norm[..exe_norm.len().min(120)]
+                    );
                 }
             }
         }
@@ -687,11 +701,7 @@ mod tests {
         assert_eq!(parts, vec!["msiexec.exe", "/x", "{GUID}", "/qn"]);
 
         // CR-8: command with quoted argument containing spaces
-        let parts = strategy
-            .parse_command_string(r#""C:\App\uninst.exe" /S /D="C:\My Path""#);
-        assert_eq!(
-            parts,
-            vec![r"C:\App\uninst.exe", "/S", r"/D=C:\My Path",]
-        );
+        let parts = strategy.parse_command_string(r#""C:\App\uninst.exe" /S /D="C:\My Path""#);
+        assert_eq!(parts, vec![r"C:\App\uninst.exe", "/S", r"/D=C:\My Path",]);
     }
 }

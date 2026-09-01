@@ -37,13 +37,25 @@ pub fn is_protected_path(path: &Path, protected_paths: &[String]) -> bool {
 
 /// Check whether a registry key path is protected and must not be deleted.
 ///
-/// Uses the same case-insensitive prefix-match strategy as `is_protected_path`
-/// but against `PROTECTED_REGISTRY_PATHS` (from `greek-common::constants`).
+/// Uses case-insensitive, separator-aware prefix matching:
+/// `HKLM\SYSTEM` blocks `HKLM\SYSTEM\CurrentControlSet` but NOT
+/// `HKLM\SOFTWARE\Microsoft\WindowsAppsFoo` (suffix without separator).
 #[cfg(target_os = "windows")]
 pub fn is_protected_registry_path(reg_path: &str) -> bool {
-    let lower = reg_path.to_lowercase();
+    fn norm(s: &str) -> String {
+        let mut n = s.to_lowercase();
+        while n.len() > 1 && n.ends_with('\\') {
+            n.pop();
+        }
+        n
+    }
+    let lower = norm(reg_path);
     for protected in greek_common::PROTECTED_REGISTRY_PATHS {
-        if lower.starts_with(&protected.to_lowercase()) {
+        let prot = norm(protected);
+        if lower == prot {
+            return true;
+        }
+        if lower.starts_with(&(prot.clone() + "\\")) {
             return true;
         }
     }
@@ -148,23 +160,25 @@ pub fn delete_registry_key(path: &str) -> Result<()> {
 
         // ── V002: block deletion of protected registry paths ──────────
         if is_protected_registry_path(path) {
-            return Err(GreekError::SafetyError(format!(
-                "Refusing to delete protected registry key: <redacted>"
-            )));
+            return Err(GreekError::SafetyError(
+                "Refusing to delete protected registry key: <redacted>".to_string(),
+            ));
         }
 
-        // Parse hive prefix (e.g. "HKLM\\" or "HKLM\\\\")
-        let (hive, remainder) = if let Some(rest) = path.strip_prefix("HKLM\\\\") {
-            (RegistryHive::Hklm, rest)
-        } else if let Some(rest) = path.strip_prefix("HKLM\\\\\\\\") {
-            (RegistryHive::Hklm, rest)
-        } else if let Some(rest) = path.strip_prefix("HKCU\\\\") {
-            (RegistryHive::Hkcu, rest)
-        } else if let Some(rest) = path.strip_prefix("HKCU\\\\\\\\") {
-            (RegistryHive::Hkcu, rest)
+        // Normalize hive prefix — accept HKLM, HKCU, HKCR, HKU with single backslash
+        let trimmed = path.trim();
+        let lower = trimmed.to_lowercase();
+        let (hive, remainder): (RegistryHive, &str) = if lower.starts_with("hklm\\") {
+            (RegistryHive::Hklm, &trimmed[5..])
+        } else if lower.starts_with("hkcu\\") {
+            (RegistryHive::Hkcu, &trimmed[5..])
+        } else if lower.starts_with("hkcr\\") || lower.starts_with("hku\\") {
+            return Err(GreekError::RegistryError(
+                "HKCR/HKU hives not supported for deletion".to_string(),
+            ));
         } else {
             return Err(GreekError::RegistryError(
-                "Cannot determine registry hive from path".to_string(),
+                "Cannot determine registry hive from path (expected HKLM\\ or HKCU\\)".to_string(),
             ));
         };
 
@@ -275,7 +289,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[cfg(target_os = "windows")] 
+    #[cfg(target_os = "windows")]
     #[test]
     fn test_is_protected_registry_path() {
         assert!(is_protected_registry_path(

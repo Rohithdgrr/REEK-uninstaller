@@ -413,9 +413,9 @@ impl MacOsAppScanner {
                 app.name, install_location
             );
 
-            // Use rm -rf for the .app bundle
+            // Use sudo -n to avoid password prompt hanging TUI; prefer trash crate in future
             let output = Command::new("sudo")
-                .args(["rm", "-rf", &install_location.to_string_lossy()])
+                .args(["-n", "rm", "-rf", &install_location.to_string_lossy()])
                 .output()
                 .map_err(|e| GreekError::SystemError(format!("Failed to remove app: {}", e)))?;
 

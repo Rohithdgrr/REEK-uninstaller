@@ -70,7 +70,8 @@ pub const PROTECTED_PATHS: &[&str] = &[
     r"\SystemRoot",
     r"\Windows\System32\drivers",
     // ── Unix / macOS ─────────────────────────────────────────────────
-    "/",
+    // NOTE: "/" removed — it would flag every absolute path as protected.
+    // Root itself is handled separately in is_protected_path() if needed.
     "/bin",
     "/sbin",
     "/lib",

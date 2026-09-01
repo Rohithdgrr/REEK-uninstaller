@@ -307,15 +307,12 @@ impl GreekAppService {
             .collect::<Vec<_>>();
 
         for artifact_id in &artifact_ids {
-            let artifact = self
-                .artifact_cache
-                .get(artifact_id)
-                .ok_or_else(|| {
-                    GreekError::NotFound(format!(
-                        "Artifact {} not found in cache; run analyze_leftovers first",
-                        artifact_id
-                    ))
-                })?;
+            let artifact = self.artifact_cache.get(artifact_id).ok_or_else(|| {
+                GreekError::NotFound(format!(
+                    "Artifact {} not found in cache; run analyze_leftovers first",
+                    artifact_id
+                ))
+            })?;
 
             // Refuse to delete protected paths
             if greek_common::is_protected_path(&artifact.path, &protected) {
@@ -347,20 +344,12 @@ impl GreekAppService {
                 ArtifactType::Directory => {
                     if artifact.path.exists() {
                         crate::utils::delete_directory(&artifact.path)?;
-                        tracing::info!(
-                            "Deleted leftover directory: {}",
-                            artifact.path.display()
-                        );
+                        tracing::info!("Deleted leftover directory: {}", artifact.path.display());
                     }
                 }
                 ArtifactType::RegistryKey => {
-                    crate::utils::delete_registry_key(
-                        &artifact.path.to_string_lossy(),
-                    )?;
-                    tracing::info!(
-                        "Deleted leftover registry key: {}",
-                        artifact.path.display()
-                    );
+                    crate::utils::delete_registry_key(&artifact.path.to_string_lossy())?;
+                    tracing::info!("Deleted leftover registry key: {}", artifact.path.display());
                 }
                 other => {
                     tracing::warn!(

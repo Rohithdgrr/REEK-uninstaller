@@ -95,14 +95,24 @@ impl TaskSchedulerScanner {
         }
 
         let json_str = String::from_utf8_lossy(&output.stdout);
-        if json_str.trim().is_empty() || json_str.trim() == "null" {
+        let trimmed = json_str.trim();
+        if trimmed.is_empty() || trimmed == "null" {
             return Ok(Vec::new());
         }
 
-        let tasks_json: Vec<serde_json::Value> = serde_json::from_str(&json_str)
-            .map_err(|e| GreekError::SystemError(format!("Failed to parse tasks JSON: {}", e)))?;
+        let values: Vec<serde_json::Value> = if trimmed.starts_with('[') {
+            serde_json::from_str(trimmed).map_err(|e| {
+                GreekError::SystemError(format!("Failed to parse tasks JSON: {}", e))
+            })?
+        } else {
+            // Single object when one task
+            let v: serde_json::Value = serde_json::from_str(trimmed).map_err(|e| {
+                GreekError::SystemError(format!("Failed to parse tasks JSON: {}", e))
+            })?;
+            vec![v]
+        };
 
-        let tasks: Vec<ScheduledTask> = tasks_json
+        let tasks: Vec<ScheduledTask> = values
             .into_iter()
             .filter_map(|task| self.parse_task_json(&task))
             .collect();

@@ -151,16 +151,30 @@ impl WindowsRegistryScanner {
             app.install_date = self.parse_install_date(&date_str);
         }
 
-        // Parse size
-        if let Ok(size_str) = key.get_value::<String, _>("EstimatedSize") {
-            app.size_bytes = size_str.parse::<u64>().ok().map(|kb| kb * 1024);
+        // Parse size: registry stores REG_DWORD kilobytes; some installers use REG_SZ
+        let size_kb: Option<u64> = key
+            .get_value::<u32, _>("EstimatedSize")
+            .ok()
+            .map(|v| v as u64)
+            .or_else(|| {
+                key.get_value::<String, _>("EstimatedSize")
+                    .ok()
+                    .and_then(|s| s.parse::<u64>().ok())
+            });
+        if let Some(kb) = size_kb {
+            app.size_bytes = Some(kb * 1024);
         }
 
-        // Check if system component
+        // Check if system component: accept both REG_DWORD 1 and REG_SZ "1"
         app.is_system_component = key
             .get_value::<u32, _>("SystemComponent")
             .ok()
             .map(|v| v == 1)
+            .or_else(|| {
+                key.get_value::<String, _>("SystemComponent")
+                    .ok()
+                    .map(|s| s.trim() == "1")
+            })
             .unwrap_or(false);
 
         // Store registry key information

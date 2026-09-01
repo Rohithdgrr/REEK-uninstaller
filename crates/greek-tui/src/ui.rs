@@ -228,7 +228,7 @@ fn render_app_list(f: &mut Frame, area: Rect, app: &TuiApp) {
         .take(visible_h)
         .map(|(i, app_item)| {
             let is_sel = i == sel;
-            let is_chk = checked.contains(&i);
+            let is_chk = checked.contains(&app_item.id);
 
             let (row_bg, row_fg) = if is_sel {
                 (Color::Rgb(59, 130, 246), Color::White)
@@ -358,12 +358,14 @@ fn compute_column_widths(total_width: u16) -> [u16; 8] {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    let count = s.chars().count();
+    if count <= max {
         s.to_string()
     } else if max > 3 {
-        format!("{}...", &s[..max - 3])
+        let truncated: String = s.chars().take(max - 3).collect();
+        format!("{}...", truncated)
     } else {
-        s[..max].to_string()
+        s.chars().take(max).collect()
     }
 }
 

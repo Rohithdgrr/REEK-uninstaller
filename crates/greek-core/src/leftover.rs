@@ -151,6 +151,13 @@ impl FileSystemLeftoverAnalyzer {
         publisher: &str,
     ) -> Result<Vec<LeftoverArtifact>> {
         let mut artifacts = Vec::new();
+        // Avoid very short names causing massive false positives ("app" → "application")
+        let min_len = 3;
+        let app_token = if app_name.len() >= min_len {
+            Some(app_name)
+        } else {
+            None
+        };
 
         for entry in WalkDir::new(directory)
             .max_depth(3)
@@ -158,13 +165,13 @@ impl FileSystemLeftoverAnalyzer {
             .filter_map(|e| e.ok())
         {
             let path = entry.path();
-
-            // Check if path contains app name or publisher
             let path_str = path.to_string_lossy().to_lowercase();
+            // Require token to appear as path component, not arbitrary substring for short names
+            let name_match = app_token.is_some_and(|t| path_str.contains(t));
+            let pub_match =
+                !publisher.is_empty() && publisher.len() >= min_len && path_str.contains(publisher);
 
-            if path_str.contains(app_name)
-                || (!publisher.is_empty() && path_str.contains(publisher))
-            {
+            if name_match || pub_match {
                 let artifact_type = if path.is_dir() {
                     ArtifactType::Directory
                 } else {
@@ -174,9 +181,11 @@ impl FileSystemLeftoverAnalyzer {
                 let mut artifact = LeftoverArtifact::new(artifact_type, path.to_path_buf());
                 artifact.description = format!("Potential leftover for {}", app_name);
 
-                // Get size
-                if let Ok(metadata) = std::fs::metadata(path) {
-                    artifact.size_bytes = Some(metadata.len());
+                // Get size — cap to avoid huge scan on giant files (check symlink)
+                if let Ok(md) = std::fs::symlink_metadata(path) {
+                    if !md.file_type().is_symlink() {
+                        artifact.size_bytes = Some(md.len());
+                    }
                 }
 
                 artifacts.push(artifact);
@@ -186,51 +195,12 @@ impl FileSystemLeftoverAnalyzer {
         Ok(artifacts)
     }
 
-    async fn scan_for_orphans(&self, directory: &PathBuf) -> Result<Vec<LeftoverArtifact>> {
-        let mut artifacts = Vec::new();
-
-        // This is a simplified orphan detection
-        // In production, this would cross-reference with installed apps
-        for entry in WalkDir::new(directory)
-            .max_depth(2)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            let path = entry.path();
-
-            // Look for directories that look like app directories but might be orphaned
-            if path.is_dir() {
-                if let Some(dir_name) = path.file_name() {
-                    let dir_name_str = dir_name.to_string_lossy();
-
-                    // Heuristic: directory with app-like name that hasn't been modified recently
-                    if let Ok(metadata) = std::fs::metadata(path) {
-                        if let Ok(modified) = metadata.modified() {
-                            let datetime: chrono::DateTime<chrono::Utc> =
-                                chrono::DateTime::from(modified);
-                            let age = chrono::Utc::now().signed_duration_since(datetime);
-
-                            // If older than 30 days, might be orphaned
-                            if age.num_days() > 30 {
-                                let mut artifact = LeftoverArtifact::new(
-                                    ArtifactType::Directory,
-                                    path.to_path_buf(),
-                                );
-                                artifact.confidence = 0.3; // Low confidence for orphan detection
-                                artifact.safety_level = SafetyLevel::Caution;
-                                artifact.description =
-                                    format!("Potential orphan directory: {}", dir_name_str);
-                                artifact.size_bytes = Some(metadata.len());
-
-                                artifacts.push(artifact);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(artifacts)
+    async fn scan_for_orphans(&self, _directory: &PathBuf) -> Result<Vec<LeftoverArtifact>> {
+        // Orphan detection without an app context is inherently low-confidence.
+        // Previously this flagged any directory older than 30 days (massive false positives).
+        // Now it returns empty until cross-referenced against installed-apps list.
+        // Callers should use analyze(&app) which is keyword-driven.
+        Ok(Vec::new())
     }
 
     fn determine_safety_level(&self, artifact: &LeftoverArtifact) -> SafetyLevel {

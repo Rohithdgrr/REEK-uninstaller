@@ -21,14 +21,30 @@ pub const NAME: &str = "reek-uninstaller";
 
 /// Check whether a file path is under any of the given protected path prefixes.
 ///
-/// Uses **case-insensitive prefix matching**, so `C:\\Windows\\System32` is
-/// correctly blocked even if only `C:\\Windows` appears in the protected list.
+/// Uses **case-insensitive, separator-aware prefix matching**:
+/// `C:\Windows` blocks `C:\Windows\System32` but NOT `C:\WindowsAppsFoo`.
+/// Normalizes `\` vs `/` and trailing separators.
 pub fn is_protected_path(path: &Path, protected_paths: &[String]) -> bool {
-    let path_str = path.to_string_lossy().to_lowercase();
+    fn normalize(s: &str) -> String {
+        let mut n = s.to_lowercase().replace('\\', "/");
+        // trim trailing '/' (but keep root "/")
+        while n.len() > 1 && n.ends_with('/') {
+            n.pop();
+        }
+        n
+    }
 
+    let path_norm = normalize(&path.to_string_lossy());
+
+    // Edge: path is exactly "/" — only blocked if "/" is explicitly protected
+    // (we removed it from constants, but honor caller-provided list)
     for protected in protected_paths {
-        let protected_lower = protected.to_lowercase();
-        if path_str.starts_with(&protected_lower) {
+        let prot_norm = normalize(protected);
+        if path_norm == prot_norm {
+            return true;
+        }
+        // separator guard: must be prot + '/'
+        if path_norm.starts_with(&(prot_norm.clone() + "/")) {
             return true;
         }
     }

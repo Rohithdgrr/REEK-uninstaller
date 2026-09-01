@@ -8,6 +8,7 @@ license = "MIT OR Apache-2.0"
 default = ["windows"]
 windows = ["greek-windows"]
 all = ["greek-windows"]
+cloud = ["dep:reqwest"]
 
 [dependencies]
 greek-common = { path = "../greek-common", version = "0.1.0" }
@@ -68,8 +69,7 @@ directories = "5.0.1"
 thiserror = { workspace = true }
 color-eyre = { workspace = true }
 
-# HTTP (for store API/metadata)
-reqwest = { version = "0.12.5", features = ["json"] }
+reqwest = { version = "0.12.12", features = ["json"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52.0"

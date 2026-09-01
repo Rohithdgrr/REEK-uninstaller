@@ -337,7 +337,7 @@ impl LinuxPackageScanner {
                     c
                 } else {
                     let mut c = Command::new("sudo");
-                    c.args(["apt", "remove", "-y", package_name]);
+                    c.args(["-n", "apt", "remove", "-y", package_name]);
                     c
                 };
                 cmd.output()
@@ -349,7 +349,7 @@ impl LinuxPackageScanner {
                     c
                 } else {
                     let mut c = Command::new("sudo");
-                    c.args(["dnf", "remove", "-y", package_name]);
+                    c.args(["-n", "dnf", "remove", "-y", package_name]);
                     c
                 };
                 cmd.output()
@@ -361,7 +361,7 @@ impl LinuxPackageScanner {
                     c
                 } else {
                     let mut c = Command::new("sudo");
-                    c.args(["pacman", "-R", "--noconfirm", package_name]);
+                    c.args(["-n", "pacman", "-R", "--noconfirm", package_name]);
                     c
                 };
                 cmd.output()
@@ -376,7 +376,7 @@ impl LinuxPackageScanner {
                     c
                 } else {
                     let mut c = Command::new("sudo");
-                    c.args(["snap", "remove", package_name]);
+                    c.args(["-n", "snap", "remove", package_name]);
                     c
                 };
                 cmd.output()

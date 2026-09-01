@@ -104,17 +104,18 @@ async fn main() -> Result<()> {
     // Setup error handling
     color_eyre::install()?;
 
-    // Setup tracing
+    // Parse CLI first so --verbose can control tracing level
+    let cli = Cli::parse();
+
     let filter = if std::env::var("RUST_LOG").is_ok() {
         tracing_subscriber::EnvFilter::from_default_env()
+    } else if cli.verbose {
+        tracing_subscriber::EnvFilter::new("debug")
     } else {
         tracing_subscriber::EnvFilter::new("info")
     };
 
     tracing_subscriber::fmt().with_env_filter(filter).init();
-
-    // Parse CLI arguments
-    let cli = Cli::parse();
 
     // Load configuration
     let config_manager = ConfigManager::new()?;
@@ -169,29 +170,50 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn cmd_list(mut service: GreekAppService, format: String, output: Option<String>) -> Result<()> {
+async fn cmd_list(
+    mut service: GreekAppService,
+    format: String,
+    output: Option<String>,
+) -> Result<()> {
     println!("Scanning for installed applications...");
 
     let apps = service.scan_all_apps().await?;
 
-    match format.as_str() {
+    let content = match format.as_str() {
         "table" => {
             render_table(&apps);
+            // For file output, generate CSV-like text for table mode
+            let mut s = String::new();
+            s.push_str("Name,Publisher,Version,Size\n");
+            for app in &apps {
+                s.push_str(&format!(
+                    "{},{},{},{}\n",
+                    app.name,
+                    app.publisher.as_deref().unwrap_or("Unknown"),
+                    app.version.as_deref().unwrap_or("Unknown"),
+                    app.display_size().unwrap_or_else(|| "Unknown".to_string())
+                ));
+            }
+            s
         }
         "json" => {
             let json = serde_json::to_string_pretty(&apps)?;
             println!("{}", json);
+            json
         }
         "csv" => {
-            render_csv(&apps);
+            let csv = render_csv_string(&apps);
+            println!("{}", csv);
+            csv
         }
         _ => {
             eprintln!("Unknown format: {}", format);
+            String::new()
         }
-    }
+    };
 
     if let Some(output_path) = output {
-        // Save to file
+        std::fs::write(&output_path, content.as_bytes())?;
         println!("Output saved to: {}", output_path);
     }
 
@@ -203,21 +225,29 @@ async fn cmd_search(mut service: GreekAppService, query: String, fuzzy: bool) ->
 
     let apps = service.scan_all_apps().await?;
 
-    let filtered: Vec<_> = apps
-        .into_iter()
-        .filter(|app| {
-            if fuzzy {
-                app.name.to_lowercase().contains(&query.to_lowercase())
+    let filtered: Vec<_> = if fuzzy {
+        use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
+        let matcher = SkimMatcherV2::default();
+        let q_lower = query.to_lowercase();
+        apps.into_iter()
+            .filter(|app| {
+                matcher.fuzzy_match(&app.name, &query).is_some()
+                    || app.name.to_lowercase().contains(&q_lower)
                     || app
                         .publisher
                         .as_ref()
-                        .map(|p| p.to_lowercase().contains(&query.to_lowercase()))
+                        .map(|p| p.to_lowercase().contains(&q_lower))
                         .unwrap_or(false)
-            } else {
-                app.name.to_lowercase() == query.to_lowercase()
-            }
-        })
-        .collect();
+            })
+            .collect()
+    } else {
+        let q_lower = query.to_lowercase();
+        apps.into_iter()
+            .filter(|app| {
+                app.name.to_lowercase() == q_lower || app.name.to_lowercase().contains(&q_lower)
+            })
+            .collect()
+    };
 
     render_table(&filtered);
 
@@ -300,8 +330,9 @@ async fn cmd_scan(
     app_name: Option<String>,
     export: Option<String>,
 ) -> Result<()> {
+    let mut artifacts_json: Option<String> = None;
     if leftovers {
-        if let Some(name) = app_name {
+        if let Some(name) = app_name.clone() {
             println!("Scanning for leftovers of: {}", name);
 
             let apps = service.scan_all_apps().await?;
@@ -321,9 +352,17 @@ async fn cmd_scan(
                 println!("    Path: {}", artifact.path.display());
                 println!("    Safety: {:?}", artifact.safety_level);
             }
+            artifacts_json = Some(serde_json::to_string_pretty(&artifacts)?);
+            if let Some(ref json) = artifacts_json {
+                println!("{}", json);
+            }
         } else if all {
             println!("Scanning for system-wide leftovers...");
-            // System-wide scan would be implemented here
+            println!(
+                "System-wide scan iterates all installed apps (not yet implemented as single API)"
+            );
+            // Fallback: empty result until LeftoverAnalyzerManager::analyze_system is exposed
+            artifacts_json = Some("[]".to_string());
         } else {
             println!("Please specify an app name with --app or use --all for system-wide scan");
         }
@@ -332,7 +371,16 @@ async fn cmd_scan(
     }
 
     if let Some(export_path) = export {
-        println!("Export results to: {}", export_path);
+        if let Some(json) = artifacts_json {
+            std::fs::write(&export_path, json.as_bytes())?;
+            println!("Exported results to: {}", export_path);
+        } else {
+            println!(
+                "Export requested but no artifacts collected; creating empty file: {}",
+                export_path
+            );
+            let _ = std::fs::write(&export_path, b"[]");
+        }
     }
 
     Ok(())
@@ -401,7 +449,7 @@ async fn cmd_restore_point(_service: GreekAppService, description: String) -> Re
             }
             Err(e) => {
                 eprintln!("Failed to create restore point: {}", e);
-                Err(e)
+                Err(e.into())
             }
         }
     }
@@ -432,7 +480,10 @@ async fn cmd_info(mut service: GreekAppService, app_name: String) -> Result<()> 
     println!("Version: {}", app.version.as_deref().unwrap_or("Unknown"));
     println!("Install Date: {:?}", app.install_date);
     println!("Install Location: {:?}", app.install_location);
-    println!("Size: {}", app.display_size().unwrap_or_else(|| "Unknown".to_string()));
+    println!(
+        "Size: {}",
+        app.display_size().unwrap_or_else(|| "Unknown".to_string())
+    );
     println!("Source: {:?}", app.source);
     println!("System Component: {}", app.is_system_component);
 
@@ -478,11 +529,12 @@ fn render_table(apps: &[greek_common::InstalledApp]) {
     println!("{}", table);
 }
 
-fn render_csv(apps: &[greek_common::InstalledApp]) {
-    println!("Name,Publisher,Version,Size,Install Date");
+fn render_csv_string(apps: &[greek_common::InstalledApp]) -> String {
+    let mut s = String::new();
+    s.push_str("Name,Publisher,Version,Size,Install Date\n");
     for app in apps {
-        println!(
-            "{},{},{},{},{}",
+        s.push_str(&format!(
+            "{},{},{},{},{}\n",
             app.name,
             app.publisher.as_deref().unwrap_or("Unknown"),
             app.version.as_deref().unwrap_or("Unknown"),
@@ -490,6 +542,12 @@ fn render_csv(apps: &[greek_common::InstalledApp]) {
             app.install_date
                 .map(|d| d.to_string())
                 .unwrap_or("Unknown".to_string())
-        );
+        ));
     }
+    s
+}
+
+#[allow(dead_code)]
+fn render_csv(apps: &[greek_common::InstalledApp]) {
+    print!("{}", render_csv_string(apps));
 }

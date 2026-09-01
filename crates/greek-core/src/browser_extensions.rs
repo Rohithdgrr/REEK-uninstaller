@@ -80,8 +80,6 @@ impl BrowserExtensionScanner {
 
     /// Get the extension directory for a browser
     fn get_extension_dir(&self, browser: &BrowserType) -> Option<PathBuf> {
-        let _home = std::env::var("HOME").ok()?;
-
         match browser {
             BrowserType::Chrome => {
                 #[cfg(target_os = "windows")]

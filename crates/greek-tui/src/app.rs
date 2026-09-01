@@ -13,11 +13,13 @@ use greek_core::GreekAppService;
 use ratatui::backend::CrosstermBackend;
 use ratatui::style::Color;
 use ratatui::Terminal;
+use std::collections::HashSet;
 use std::sync::{mpsc, Arc};
 #[cfg(all(target_os = "windows", feature = "windows"))]
 use std::time::Duration;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 pub struct TuiApp {
     _config: GreekConfig,
@@ -30,7 +32,7 @@ pub struct TuiApp {
     apps: Vec<InstalledApp>,
     filtered_apps: Vec<InstalledApp>,
     selected_app_index: usize,
-    selected_apps: Vec<usize>,
+    selected_apps: HashSet<Uuid>,
 
     // UI state
     show_details: bool,
@@ -112,7 +114,7 @@ impl TuiApp {
             apps: Vec::new(),
             filtered_apps: Vec::new(),
             selected_app_index: 0,
-            selected_apps: Vec::new(),
+            selected_apps: HashSet::new(),
             show_details: true,
             show_help: false,
             current_operation: None,
@@ -370,9 +372,7 @@ impl TuiApp {
                 });
             }
             Action::AddToBatch => {
-                if !self.selected_apps.contains(&self.selected_app_index) {
-                    self.selected_apps.push(self.selected_app_index);
-                }
+                self.selected_apps.insert(app.id);
                 self.status_message = Some((format!("Added {} to batch", app.name), false));
                 self.action_result_receiver = None;
             }
@@ -485,23 +485,20 @@ impl TuiApp {
                 self.show_details = !self.show_details;
             }
 
-            // Selection
+            // Selection — use Uuid set so filter/sort doesn't desync
             KeyCode::Char(' ') => {
-                if let Some(pos) = self
-                    .selected_apps
-                    .iter()
-                    .position(|&i| i == self.selected_app_index)
-                {
-                    self.selected_apps.remove(pos);
-                } else {
-                    self.selected_apps.push(self.selected_app_index);
+                if let Some(app) = self.filtered_apps.get(self.selected_app_index) {
+                    let id = app.id;
+                    if !self.selected_apps.insert(id) {
+                        self.selected_apps.remove(&id);
+                    }
                 }
             }
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.selected_apps = (0..self.filtered_apps.len()).collect();
+                self.selected_apps = self.filtered_apps.iter().map(|a| a.id).collect();
             }
             KeyCode::Char('a') => {
-                self.selected_apps = (0..self.filtered_apps.len()).collect();
+                self.selected_apps = self.filtered_apps.iter().map(|a| a.id).collect();
             }
             KeyCode::Char('n') => {
                 self.selected_apps.clear();
@@ -675,8 +672,12 @@ impl TuiApp {
     pub fn get_selected_index(&self) -> usize {
         self.selected_app_index
     }
-    pub fn get_selected_apps(&self) -> &[usize] {
+    pub fn get_selected_apps(&self) -> &HashSet<Uuid> {
         &self.selected_apps
+    }
+
+    pub fn is_selected(&self, app: &InstalledApp) -> bool {
+        self.selected_apps.contains(&app.id)
     }
     pub fn scroll_offset(&self) -> usize {
         self.scroll_offset

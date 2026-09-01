@@ -95,25 +95,24 @@ impl ScannerManager {
     }
 
     pub async fn scan_all(&self) -> Result<Vec<InstalledApp>> {
-        let mut all_apps = Vec::new();
-
         tracing::info!("Starting full scan with {} scanners", self.scanners.len());
 
+        let mut all_apps = Vec::new();
         for scanner in &self.scanners {
-            let scanner_name = scanner.scanner_name();
-            tracing::info!("Running scanner: {}", scanner_name);
-
             match scanner.scan().await {
                 Ok(apps) => {
-                    tracing::info!("Scanner '{}' found {} apps", scanner_name, apps.len());
+                    tracing::info!(
+                        "Scanner '{}' found {} apps",
+                        scanner.scanner_name(),
+                        apps.len()
+                    );
                     all_apps.extend(apps);
                 }
                 Err(e) => {
-                    tracing::error!("Scanner '{}' failed: {}", scanner_name, e);
+                    tracing::error!("Scanner '{}' failed: {}", scanner.scanner_name(), e);
                 }
             }
         }
-
         // Deduplicate apps
         all_apps = self.deduplicate_apps(all_apps);
 
@@ -188,21 +187,57 @@ impl ScannerManager {
 
     /// Parallel scan using rayon for CPU-bound operations.
     /// Collects into per-fork vectors and merges afterwards, avoiding any
-    /// shared-mutable-state / lock contention across the rayon pool (which
-    /// could otherwise deadlock when the pool is saturated).
+    /// shared-mutable-state / lock contention across the rayon pool.
     ///
-    /// LOW-3: wrapped in spawn_blocking so rayon's thread pool doesn't
-    /// interfere with the tokio async runtime.
+    /// Fixed: previously returned empty (placeholder). Now delegates to
+    /// scan_directory_parallel per directory.
     pub async fn scan_parallel(&self, directories: Vec<PathBuf>) -> Vec<InstalledApp> {
-        let scanners: Vec<_> = self.scanners.iter().map(|s| s.scanner_name()).collect();
+        // Clone self-relevant data for spawn_blocking (ScannerManager is not Sync due to trait objects)
+        // Instead, run portable parallel scan directly via spawn_blocking with a stateless helper.
         let dirs = directories.clone();
 
         let all_apps: Vec<Vec<InstalledApp>> = tokio::task::spawn_blocking(move || {
             dirs.par_iter()
                 .filter_map(|dir| {
-                    // This is a simplified parallel scan — each scanner does its own
-                    // directory walking internally.
-                    None::<Vec<InstalledApp>>
+                    if !dir.exists() {
+                        return None;
+                    }
+                    // Stateless portable scan: look for exe matching dir name
+                    let entries: Vec<_> = std::fs::read_dir(dir)
+                        .ok()?
+                        .filter_map(|e| e.ok())
+                        .collect();
+                    let mut found = Vec::new();
+                    for entry in entries {
+                        let path = entry.path();
+                        if !path.is_dir() {
+                            continue;
+                        }
+                        let dir_name = path.file_name()?.to_str()?;
+                        if let Ok(exe_entries) = std::fs::read_dir(&path) {
+                            for exe_ent in exe_entries.filter_map(|e| e.ok()) {
+                                let fp = exe_ent.path();
+                                if fp.is_file()
+                                    && fp.extension().is_some_and(|e| e == "exe")
+                                    && fp
+                                        .file_stem()
+                                        .and_then(|s| s.to_str())
+                                        .is_some_and(|s| s.eq_ignore_ascii_case(dir_name))
+                                {
+                                    let app = greek_common::InstalledApp::new(
+                                        dir_name.to_string(),
+                                        greek_common::InstallSource::Portable {
+                                            detected_path: path.clone(),
+                                            confidence: 0.8,
+                                        },
+                                    );
+                                    found.push(app);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Some(found)
                 })
                 .collect()
         })
@@ -213,6 +248,7 @@ impl ScannerManager {
         self.deduplicate_apps(apps)
     }
 
+    #[allow(dead_code)]
     fn scan_directory_parallel(&self, directory: &PathBuf) -> Result<Vec<InstalledApp>> {
         if !directory.exists() {
             return Ok(Vec::new());

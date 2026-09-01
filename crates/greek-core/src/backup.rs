@@ -243,21 +243,36 @@ pub fn load_transaction(manifest_path: &Path) -> Result<UninstallTransaction> {
 }
 
 /// Recursively copy a file or directory (preserving directory contents).
+/// Skips symlinks to avoid loops / target leakage; caps recursion at MAX_DEPTH.
 fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
-    if src.is_dir() {
-        fs::create_dir_all(dst)?;
-        for entry in fs::read_dir(src)? {
-            let entry = entry?;
-            copy_tree(&entry.path(), &dst.join(entry.file_name()))?;
+    const MAX_DEPTH: usize = 64;
+    fn inner(src: &Path, dst: &Path, depth: usize) -> Result<()> {
+        if depth > MAX_DEPTH {
+            return Err(GreekError::BackupError(
+                "Max backup recursion depth exceeded (possible symlink loop)".to_string(),
+            ));
         }
-        Ok(())
-    } else {
-        if let Some(parent) = dst.parent() {
-            fs::create_dir_all(parent)?;
+        let meta = fs::symlink_metadata(src)?;
+        if meta.file_type().is_symlink() {
+            tracing::warn!("Skipping symlink during backup: {}", src.display());
+            return Ok(());
         }
-        fs::copy(src, dst)?;
-        Ok(())
+        if meta.is_dir() {
+            fs::create_dir_all(dst)?;
+            for entry in fs::read_dir(src)? {
+                let entry = entry?;
+                inner(&entry.path(), &dst.join(entry.file_name()), depth + 1)?;
+            }
+            Ok(())
+        } else {
+            if let Some(parent) = dst.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(src, dst)?;
+            Ok(())
+        }
     }
+    inner(src, dst, 0)
 }
 
 /// Restore a single file or directory backup. Never overwrites an existing

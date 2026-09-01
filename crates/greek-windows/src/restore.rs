@@ -166,7 +166,7 @@ impl RestorePointManager {
         })
     }
 
-    /// Run a PowerShell command
+    /// Run a PowerShell command — respects stderr and logs it.
     async fn run_powershell(&self, command: &str) -> Result<String> {
         use std::process::Command;
 
@@ -175,19 +175,29 @@ impl RestorePointManager {
             .output()
             .map_err(|e| GreekError::SystemError(format!("Failed to execute PowerShell: {}", e)))?;
 
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        if !stderr.trim().is_empty() {
+            tracing::warn!("PowerShell stderr: {}", stderr.trim());
+        }
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            // Some commands return error codes but still work
-            if !stderr.contains("not recognized") {
-                return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+            // Do not mask real errors; only treat "not recognized" as soft failure
+            if stderr.contains("not recognized") {
+                return Err(GreekError::SystemError(format!(
+                    "PowerShell command failed: {}",
+                    stderr.trim()
+                )));
             }
+            // Other non-zero exits: surface as error with both streams
             return Err(GreekError::SystemError(format!(
-                "PowerShell command failed: {}",
-                stderr
+                "PowerShell command failed (exit {:?}): stdout='{}' stderr='{}'",
+                output.status.code(),
+                stdout.trim(),
+                stderr.trim()
             )));
         }
 
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        Ok(stdout)
     }
 }
 

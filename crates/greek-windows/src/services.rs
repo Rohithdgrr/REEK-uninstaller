@@ -35,13 +35,26 @@ impl WindowsServiceManager {
         info!("Finding services for app: {}", app.name);
 
         let app_name_lower = app.name.to_lowercase();
+        let install_lower = app
+            .install_location
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_lowercase());
         let all_services = self.list_all_services().await?;
 
         let matching: Vec<WindowsService> = all_services
             .into_iter()
             .filter(|svc| {
-                svc.name.to_lowercase().contains(&app_name_lower)
+                // Name / display name match
+                if svc.name.to_lowercase().contains(&app_name_lower)
                     || svc.display_name.to_lowercase().contains(&app_name_lower)
+                {
+                    return true;
+                }
+                // For future: if we had PathName per service, match install_location prefix.
+                // Currently list_all_services does not expose PathName; name match is conservative.
+                // If install_location present, consider it for filtering via secondary WMI query.
+                let _ = &install_lower;
+                false
             })
             .collect();
 
@@ -49,13 +62,13 @@ impl WindowsServiceManager {
         Ok(matching)
     }
 
-    /// List all Windows services
+    /// List all Windows services — uses Win32_Service to get real ProcessId.
     pub async fn list_all_services(&self) -> Result<Vec<WindowsService>> {
         use std::process::Command;
 
+        // Use CimInstance which exposes ProcessId; Get-Service does not.
         let ps_command = r#"
-            Get-Service | Select-Object Name, DisplayName, Status, 
-            @{N='ProcessId';E={0}} | ConvertTo-Json
+            Get-CimInstance Win32_Service | Select-Object Name, DisplayName, State, ProcessId | ConvertTo-Json
         "#;
 
         let output = Command::new("powershell.exe")
@@ -68,34 +81,51 @@ impl WindowsServiceManager {
         }
 
         let json_str = String::from_utf8_lossy(&output.stdout);
-        if json_str.trim().is_empty() || json_str.trim() == "null" {
+        let trimmed = json_str.trim();
+        if trimmed.is_empty() || trimmed == "null" {
             return Ok(Vec::new());
         }
 
-        let services_json: Vec<serde_json::Value> = serde_json::from_str(&json_str)
-            .map_err(|e| GreekError::SystemError(format!("Failed to parse services: {}", e)))?;
+        // PowerShell emits single object when one service; handle both array & object
+        let values: Vec<serde_json::Value> = if trimmed.starts_with('[') {
+            serde_json::from_str(trimmed)
+                .map_err(|e| GreekError::SystemError(format!("Failed to parse services: {}", e)))?
+        } else {
+            let v: serde_json::Value = serde_json::from_str(trimmed)
+                .map_err(|e| GreekError::SystemError(format!("Failed to parse services: {}", e)))?;
+            vec![v]
+        };
 
-        let services: Vec<WindowsService> = services_json
+        let services: Vec<WindowsService> = values
             .into_iter()
             .filter_map(|svc| {
                 let name = svc.get("Name")?.as_str()?.to_string();
                 let display_name = svc.get("DisplayName")?.as_str()?.to_string();
-                let status_str = svc.get("Status")?.as_str()?;
-
+                // Win32_Service uses "State", fallback to "Status" for compat
+                let status_str = svc
+                    .get("State")
+                    .or_else(|| svc.get("Status"))
+                    .and_then(|v| v.as_str())?;
                 let status = match status_str {
                     "Running" => ServiceStatus::Running,
                     "Stopped" => ServiceStatus::Stopped,
                     "Paused" => ServiceStatus::Paused,
-                    "StartPending" => ServiceStatus::StartPending,
-                    "StopPending" => ServiceStatus::StopPending,
+                    "Start Pending" | "StartPending" => ServiceStatus::StartPending,
+                    "Stop Pending" | "StopPending" => ServiceStatus::StopPending,
                     _ => ServiceStatus::Unknown,
                 };
-
+                let pid = svc.get("ProcessId").and_then(|v| v.as_u64()).and_then(|n| {
+                    if n == 0 {
+                        None
+                    } else {
+                        Some(n as u32)
+                    }
+                });
                 Some(WindowsService {
                     name,
                     display_name,
                     status,
-                    process_id: None,
+                    process_id: pid,
                 })
             })
             .collect();
