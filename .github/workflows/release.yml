@@ -37,18 +37,18 @@ jobs:
       attestations: write
     steps:
     - name: Checkout repository
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         persist-credentials: false
 
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1 stable
+      uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # v1 stable
       with:
         toolchain: stable
         targets: ${{ matrix.target }}
 
     - name: Cache cargo
-      uses: Swatinem/rust-cache@a95ba195448af2da9b00fb742d14ffaaf3c21f43 # v2.7.0
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       with:
         workspaces: . -> target
 
@@ -79,7 +79,7 @@ jobs:
         subject-path: dist/${{ matrix.target }}/reek*
 
     - name: Upload build artifacts
-      uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: reek-${{ matrix.target }}
         path: dist/${{ matrix.target }}/*
@@ -100,18 +100,18 @@ jobs:
             args: "--target aarch64-apple-darwin"
     steps:
     - name: Checkout repository
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     - name: Setup Node
       uses: actions/setup-node@39370e3970a6d050a480ffad4ff0ed4ea94a6a8 # v4.1.0
       with:
         node-version: 20
         cache: npm
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1 stable
+      uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # v1 stable
       with:
         toolchain: stable
     - name: Cache cargo
-      uses: Swatinem/rust-cache@a95ba195448af2da9b00fb742d14ffaaf3c21f43 # v2.7.0
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
     - name: Install dependencies (Ubuntu)
       if: matrix.os == 'ubuntu-latest'
       run: |
@@ -128,7 +128,7 @@ jobs:
       with:
         args: ${{ matrix.args }}
     - name: Upload Tauri bundle + updater JSON
-      uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: tauri-bundle-${{ matrix.os }}
         path: |
@@ -145,7 +145,7 @@ jobs:
       id-token: write
     steps:
     - name: Checkout repository
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         persist-credentials: false
 
@@ -184,7 +184,7 @@ jobs:
       contents: read
     steps:
     - name: Checkout repository
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         persist-credentials: false
     - name: Echo next steps
