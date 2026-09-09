@@ -3,7 +3,8 @@
 use crate::config::ConfigManager;
 use crate::leftover::LeftoverAnalyzerManager;
 use crate::scanner::ScannerManager;
-use crate::uninstaller::UninstallerManager;
+use crate::uninstaller::{ForceRemoveStrategy, UninstallerManager};
+use greek_common::UninstallStrategy;
 use greek_common::{
     AppEvent, ArtifactType, BatchQueue, GreekConfig, GreekError, InstalledApp, LeftoverArtifact,
     Result, SafetyLevel, UninstallOptions, UninstallResult,
@@ -14,6 +15,32 @@ use tokio::sync::broadcast;
 
 #[cfg(all(target_os = "windows", feature = "windows"))]
 use greek_windows::icon::IconExtractor;
+
+/// One leftover item nominated for deletion by path (IPC-friendly: no
+/// cross-call UUID cache required).
+#[derive(Debug, Clone)]
+pub struct CleanLeftoverRequest {
+    pub path: String,
+    pub artifact_type: String,
+    pub safety: String,
+}
+
+/// Per-item outcome of a [`GreekAppService::clean_leftover_paths`] call.
+#[derive(Debug, Clone)]
+pub struct CleanLeftoverOutcome {
+    pub path: String,
+    pub deleted: bool,
+    pub reason: String,
+}
+
+impl CleanLeftoverOutcome {
+    fn deleted(path: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self { path: path.into(), deleted: true, reason: reason.into() }
+    }
+    fn skipped(path: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self { path: path.into(), deleted: false, reason: reason.into() }
+    }
+}
 
 /// Main service that coordinates all uninstaller operations
 pub struct GreekAppService {
@@ -181,12 +208,26 @@ impl GreekAppService {
             );
         }
 
+        // Hide entries with no supported removal path (stale references,
+        // extension listings without backing data): the desktop list only
+        // shows applications that can actually be deleted.
+        let before_removal_filter = apps.len();
+        apps.retain(|a| a.has_removal_path());
+        let unremovable = before_removal_filter.saturating_sub(apps.len());
+        if unremovable > 0 {
+            tracing::info!(
+                "Filtered {} apps with no removal path (showing {} deletable)",
+                unremovable,
+                apps.len()
+            );
+        }
+
         let _ = self.event_sender.send(AppEvent::ScanCompleted {
             scanner_id: "all".to_string(),
             count: apps.len(),
         });
 
-        tracing::info!("System scan completed, found {} applications ({} filtered as OS-critical)", apps.len(), filtered);
+        tracing::info!("System scan completed, found {} applications ({} OS-critical filtered, {} without removal path)", apps.len(), filtered, unremovable);
 
         // MED-1: cache the results
         self.app_cache = Some((apps.clone(), Instant::now()));
@@ -275,18 +316,67 @@ impl GreekAppService {
         }
     }
 
-    /// Force remove an application
+    /// Force remove an application.
+    ///
+    /// True force: bypasses the vendor uninstaller entirely and deletes the
+    /// install directory plus recorded registry keys directly. (The strategy
+    /// picker would otherwise select MSI/Standard first whenever an
+    /// uninstall string exists, making "force" a misnomer.)
     pub async fn force_remove_app(
         &self,
         app: &InstalledApp,
         options: UninstallOptions,
     ) -> Result<UninstallResult> {
+        if app.is_os_critical() {
+            tracing::error!("Blocked force remove of OS-critical app: {}", app.name);
+            return Err(GreekError::SafetyError(format!(
+                "Refusing to force-remove OS-critical application '{}'.",
+                app.name
+            )));
+        }
         tracing::warn!("Starting force remove for: {}", app.name);
 
         let mut force_options = options;
         force_options.force = true;
 
-        self.uninstall_app(app, force_options).await
+        if force_options.create_restore_point {
+            self.create_restore_point(&format!("REEK force remove: {}", app.name))
+                .await?;
+        }
+
+        // Store apps live under the protected WindowsApps tree, so file
+        // deletion can never remove them: Appx removal IS the force path.
+        #[cfg(all(target_os = "windows", feature = "windows"))]
+        if matches!(
+            &app.source,
+            greek_common::InstallSource::WindowsStore { .. }
+        ) {
+            let strategy = crate::uninstaller::StoreUninstallStrategy::new();
+            let result = strategy
+                .uninstall(app, force_options)
+                .await
+                .map_err(|e| GreekError::UninstallError(e.to_string()))?;
+            tracing::warn!(
+                "Force remove (Store) completed for: {} - Success: {}",
+                app.name,
+                result.success
+            );
+            return Ok(result);
+        }
+
+        let strategy = ForceRemoveStrategy::new();
+        let result = strategy
+            .uninstall(app, force_options)
+            .await
+            .map_err(|e| GreekError::UninstallError(e.to_string()))?;
+
+        tracing::warn!(
+            "Force remove completed for: {} - Success: {}",
+            app.name,
+            result.success
+        );
+
+        Ok(result)
     }
 
     /// Analyze leftovers for an app.
@@ -398,6 +488,158 @@ impl GreekAppService {
 
         tracing::info!("Leftover cleanup completed");
         Ok(())
+    }
+
+    /// Delete leftover artifacts by explicit path.
+    ///
+    /// Unlike [`clean_leftovers`] (UUIDs resolved through this instance's
+    /// cache), this takes caller-supplied paths so it works across IPC calls,
+    /// where every command builds a fresh service. Each path is re-validated:
+    /// protected filesystem/registry paths are always refused; when
+    /// `only_safe` is true, only `Safe` items are deleted (auto-clean after
+    /// uninstall). Explicit user-confirmed cleans pass `only_safe = false`.
+    pub async fn clean_leftover_paths(
+        &self,
+        items: Vec<CleanLeftoverRequest>,
+        only_safe: bool,
+    ) -> Vec<CleanLeftoverOutcome> {
+        let protected: Vec<String> = greek_common::PROTECTED_PATHS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
+            let path_str = item.path.trim().to_string();
+            if path_str.is_empty() {
+                out.push(CleanLeftoverOutcome::skipped(item.path, "empty path"));
+                continue;
+            }
+            let is_safe = item.safety.eq_ignore_ascii_case("safe");
+            if only_safe && !is_safe {
+                out.push(CleanLeftoverOutcome::skipped(
+                    path_str,
+                    "requires explicit confirmation",
+                ));
+                continue;
+            }
+            // Pseudo-paths for services never touch the filesystem guard.
+            let is_service = item
+                .artifact_type
+                .eq_ignore_ascii_case("service")
+                || path_str.to_lowercase().starts_with("service\\");
+            if !is_service {
+                let probe = std::path::PathBuf::from(&path_str);
+                // Registry pseudo-paths are covered by the registry guard
+                // inside the delete helpers; only gate real filesystem paths.
+                let looks_registry = {
+                    let l = path_str.to_lowercase();
+                    l.starts_with("hklm\\") || l.starts_with("hkcu\\")
+                };
+                if !looks_registry && greek_common::is_protected_path(&probe, &protected) {
+                    out.push(CleanLeftoverOutcome::skipped(path_str, "protected path"));
+                    continue;
+                }
+            }
+            out.push(self.delete_single_leftover(&item, &path_str).await);
+        }
+        out
+    }
+
+    async fn delete_single_leftover(
+        &self,
+        item: &CleanLeftoverRequest,
+        path_str: &str,
+    ) -> CleanLeftoverOutcome {
+        let kind = item.artifact_type.to_lowercase();
+        let res: Result<()> = match kind.as_str() {
+            // Windows service recorded as `Service\<name>`.
+            "service" => {
+                let name = path_str
+                    .strip_prefix("Service\\")
+                    .or_else(|| path_str.strip_prefix("service\\"))
+                    .unwrap_or(path_str);
+                self.delete_orphan_service(name).await
+            }
+            "scheduledtask" | "scheduled_task" | "task" => {
+                crate::task_scheduler::TaskSchedulerScanner::new()
+                    .delete_task(path_str)
+                    .await
+            }
+            "registrykey" | "registry_key" => {
+                crate::utils::delete_registry_key(path_str)
+            }
+            "registryvalue" | "registry_value" => {
+                // Format from the analyzer: `HKLM\path\to\key\ [ValueName]`.
+                match path_str.rsplit_once("\\ [") {
+                    Some((key, rest)) => match rest.strip_suffix(']') {
+                        Some(value) => crate::utils::delete_registry_value(key, value),
+                        None => Err(greek_common::GreekError::RegistryError(
+                            "Unparseable registry value path".to_string(),
+                        )),
+                    },
+                    None => Err(greek_common::GreekError::RegistryError(
+                        "Unparseable registry value path".to_string(),
+                    )),
+                }
+            }
+            // Shell extensions and drivers are never auto-deleted: removing the
+            // wrong one breaks Explorer or boot. Report explicitly instead.
+            "shellextension" | "shell_extension" | "driver" => {
+                return CleanLeftoverOutcome::skipped(
+                    path_str.to_string(),
+                    "manual removal only (system integration)",
+                )
+            }
+            _ => {
+                // Files, dirs, shortcuts, fonts, temp files, videos, dev
+                // modules: decide by what actually exists on disk.
+                let p = std::path::PathBuf::from(path_str);
+                if !p.exists() {
+                    return CleanLeftoverOutcome::deleted(
+                        path_str.to_string(),
+                        "already gone",
+                    );
+                }
+                // Symlinks/junctions are never followed: refuse reparse points.
+                if std::fs::symlink_metadata(&p)
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false)
+                {
+                    return CleanLeftoverOutcome::skipped(
+                        path_str.to_string(),
+                        "reparse point — manual review",
+                    );
+                }
+                if p.is_dir() {
+                    crate::utils::delete_directory(&p)
+                } else {
+                    crate::utils::delete_file(&p)
+                }
+            }
+        };
+        match res {
+            Ok(()) => CleanLeftoverOutcome::deleted(path_str.to_string(), "deleted"),
+            Err(e) => CleanLeftoverOutcome::skipped(path_str.to_string(), e.to_string()),
+        }
+    }
+
+    /// Stop and delete an orphaned Windows service by name.
+    async fn delete_orphan_service(&self, name: &str) -> Result<()> {
+        #[cfg(all(target_os = "windows", feature = "windows"))]
+        {
+            let mgr = greek_windows::services::WindowsServiceManager::new();
+            // Best-effort stop; delete is the goal.
+            let _ = mgr.stop_service(name).await;
+            mgr.delete_service(name).await?;
+            Ok(())
+        }
+        #[cfg(not(all(target_os = "windows", feature = "windows")))]
+        {
+            let _ = name;
+            Err(greek_common::GreekError::SystemError(
+                "Service deletion is only supported on Windows".to_string(),
+            ))
+        }
     }
 
     /// Create a batch queue
@@ -513,5 +755,126 @@ impl GreekAppService {
     pub fn update_config(&mut self, config: GreekConfig) -> Result<()> {
         self.config = config;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use greek_common::{InstallSource, RegistryHive};
+
+    fn fake_app(name: &str) -> InstalledApp {
+        InstalledApp::new(
+            name.to_string(),
+            InstallSource::Registry {
+                hive: RegistryHive::Hklm,
+                key_path: "test".to_string(),
+            },
+        )
+    }
+
+    /// Writable scratch dir outside every PROTECTED_PATHS prefix.
+    /// `TempDir` lives under `C:\Users` (protected by design), so positive
+    /// deletion tests need a drive-root scratch dir. Skips gracefully where
+    /// the root is not writable.
+    fn writable_scratch(tag: &str) -> Option<std::path::PathBuf> {
+        let dir = std::path::PathBuf::from(format!(
+            "C:\\reek-test-{}-{}",
+            std::process::id(),
+            tag
+        ));
+        match std::fs::create_dir_all(&dir) {
+            Ok(()) => Some(dir),
+            Err(e) => {
+                eprintln!("SKIP: drive-root scratch not writable ({e})");
+                None
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_force_remove_skips_vendor_uninstaller() {
+        let Some(scratch) = writable_scratch("force") else { return };
+        let target = scratch.join("FakeApp");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("app.exe"), b"x").unwrap();
+        let mut app = fake_app("FakeAppForForceTest");
+        // A vendor uninstaller that can never succeed: nonexistent binary.
+        // True force must never execute it.
+        app.uninstall_string =
+            Some("C:\\nonexistent\\uninstall-xyz123.exe /S".to_string());
+        app.install_location = Some(target.clone());
+        let svc = GreekAppService::new(GreekConfig::default()).unwrap();
+        let res = svc
+            .force_remove_app(&app, UninstallOptions::force())
+            .await
+            .unwrap();
+        assert!(res.success);
+        assert_eq!(res.strategy_used, "force-remove");
+        assert!(!target.exists());
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[tokio::test]
+    async fn test_clean_leftover_paths_deletes_file_and_blocks_protected() {
+        let svc = GreekAppService::new(GreekConfig::default()).unwrap();
+        // Pure-string cases: no filesystem needed.
+        let out = svc
+            .clean_leftover_paths(
+                vec![
+                    CleanLeftoverRequest {
+                        path: "C:\\reek-definitely-missing-xyz\\gone.dll".to_string(),
+                        artifact_type: "File".to_string(),
+                        safety: "Caution".to_string(),
+                    },
+                    CleanLeftoverRequest {
+                        path: "C:\\Windows\\System32\\evil.dll".to_string(),
+                        artifact_type: "File".to_string(),
+                        safety: "Safe".to_string(),
+                    },
+                ],
+                false,
+            )
+            .await;
+        assert!(out[0].deleted, "missing file must report already-gone");
+        assert!(!out[1].deleted, "protected path must be refused");
+        // Real deletion where the platform allows it.
+        if let Some(scratch) = writable_scratch("clean") {
+            let f = scratch.join("leftover.dll");
+            std::fs::write(&f, b"x").unwrap();
+            let out = svc
+                .clean_leftover_paths(
+                    vec![CleanLeftoverRequest {
+                        path: f.to_string_lossy().to_string(),
+                        artifact_type: "File".to_string(),
+                        safety: "Safe".to_string(),
+                    }],
+                    false,
+                )
+                .await;
+            assert!(out[0].deleted, "expected deletion, got {:?}", out[0]);
+            assert!(!f.exists());
+            let _ = std::fs::remove_dir_all(&scratch);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_clean_leftover_paths_only_safe_gate() {
+        let svc = GreekAppService::new(GreekConfig::default()).unwrap();
+        // Gate is evaluated before any filesystem touch: use a missing path.
+        let req = || CleanLeftoverRequest {
+            path: "C:\\reek-definitely-missing-xyz\\risky.dat".to_string(),
+            artifact_type: "File".to_string(),
+            safety: "Caution".to_string(),
+        };
+        let gated = svc.clean_leftover_paths(vec![req()], true).await;
+        assert!(!gated[0].deleted, "only_safe must skip Caution items");
+        assert!(
+            gated[0].reason.contains("confirmation"),
+            "unexpected reason: {}",
+            gated[0].reason
+        );
+        let explicit = svc.clean_leftover_paths(vec![req()], false).await;
+        assert!(explicit[0].deleted, "explicit clean must delete");
     }
 }

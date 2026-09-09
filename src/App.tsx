@@ -14,7 +14,7 @@ import { VideoVault } from "./components/VideoVault";
 import { DevCleaner } from "./components/DevCleaner";
 import { SuccessTickDialog } from "./components/SuccessTickDialog";
 import { useAppStore } from "./store/useAppStore";
-import { scanApplications, uninstallApplications, onUninstallProgressWithHeartbeat, getAppResources, type AppResourceDto } from "./lib/tauri";
+import { scanApplications, uninstallApplications, onUninstallProgressWithHeartbeat, getAppResources, clearIconCache, type AppResourceDto } from "./lib/tauri";
 import { Film, Package, LayoutGrid } from "lucide-react";
 
 export default function App() {
@@ -36,13 +36,19 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
+      // IDs are regenerated each scan — drop stale icon blobs so every row
+      // re-resolves its real high-quality icon for the fresh IDs.
+      clearIconCache();
       const data = await scanApplications();
-      setApps(data);
+      // Deletable-only (defense-in-depth; backend already filters).
+      setApps(data.filter((a) => a.can_uninstall !== false));
       setView("dashboard");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
       setToast(`Scan failed: ${msg}`);
+      // Escape splash on failure so Header Scan retry stays reachable
+      setView("dashboard");
     } finally {
       setLoading(false);
     }
@@ -61,8 +67,9 @@ export default function App() {
           pushLog(`[${evt.current}/${evt.total}] ${evt.app_name} — ${evt.status}: ${evt.log}`);
         },
         () => {
-          // Heartbeat lost — backend may have crashed (§2.2)
-          if (view === "progress") setHeartbeatLost(true);
+          // Heartbeat lost — MSI/silent uninstallers can go quiet for minutes,
+          // so only warn when the progress view is actually showing.
+          if (useAppStore.getState().view === "progress") setHeartbeatLost(true);
         }
       )
         .then((fn) => { unlisten = fn; })
@@ -75,7 +82,7 @@ export default function App() {
     };
     subscribe();
     return () => { unlisten?.(); };
-  }, [load, setProgressSequenced, pushLog, view, setHeartbeatLost]);
+  }, [load, setProgressSequenced, pushLog, setHeartbeatLost]);
 
   // Live resources for default heavy-first sorting (size + CPU/GPU/RAM/VRAM)
   useEffect(() => {
@@ -92,7 +99,10 @@ export default function App() {
   }, []);
 
   const filtered = useMemo(() => {
-    let out = [...apps];
+    // Deletable-only: hide entries with no real removal path even if a stale
+    // cache or older backend ever returns them. Backend already filters via
+    // has_removal_path; this is defense-in-depth.
+    let out = apps.filter((a) => a.can_uninstall !== false);
     if (search.trim()) {
       const q = search.toLowerCase();
       out = out.filter((a) => a.name.toLowerCase().includes(q) || (a.publisher ?? "").toLowerCase().includes(q));
@@ -141,7 +151,14 @@ export default function App() {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setToast(msg);
-      setView("dashboard");
+      // Preserve the failure in the results view instead of dropping logs
+      const ids = Array.from(selected);
+      pushLog(`Batch failed: ${msg}`);
+      setResults(ids.map((id) => {
+        const a = apps.find((x) => x.id === id);
+        return { id, name: a?.name ?? id, success: false, error: msg };
+      }));
+      setView("results");
     }
   };
 
@@ -151,7 +168,15 @@ export default function App() {
     await load();
   };
 
-  if (view === "splash" || (loading && apps.length === 0)) {
+  const handleCancelProgress = () => {
+    // Backend batch has no abort channel; detach UI and rescan.
+    // A mid-flight uninstaller keeps running; results refresh on next scan.
+    pushLog("Cancelled by user — leaving progress view; a running uninstaller may still complete in the background.");
+    setToast("Uninstall view closed. Rescan to refresh.");
+    setView("dashboard");
+  };
+
+  if (view === "splash") {
     return (
       <div className="min-h-screen bg-[#0A0A0A] flex flex-col items-center justify-center p-6 md:p-8 relative overflow-hidden">
         {/* Whole-screen red shade — rich Mahakali aura */}
@@ -271,7 +296,7 @@ export default function App() {
                 {section==="apps" && (
                   <>
                     <SearchBar value={search} onChange={setSearch} count={filtered.length} />
-                    {loading ? <Skeleton /> : <AppTable apps={filtered} onDetails={setDetailId} />}
+                    {loading ? <Skeleton /> : <AppTable apps={filtered} resources={resMap} onDetails={setDetailId} />}
                   </>
                 )}
                 {section==="movies" && (
@@ -291,10 +316,10 @@ export default function App() {
               <>
                 {heartbeatLost && (
                   <div className="rounded-[12px] border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-400">
-                    No progress from backend for 5s — it may have crashed. Try reloading or check logs.
+                    No progress from backend for 30s — a silent installer may still be running. Check logs before reloading.
                   </div>
                 )}
-                <ProgressView current={progress?.current ?? 0} total={progress?.total ?? selected.size} logs={logs} />
+                <ProgressView current={progress?.current ?? 0} total={progress?.total ?? selected.size} logs={logs} onCancel={handleCancelProgress} />
               </>
             )}
 

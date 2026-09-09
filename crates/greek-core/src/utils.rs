@@ -298,6 +298,87 @@ pub fn delete_registry_key(path: &str) -> Result<()> {
     }
 }
 
+/// Delete a single registry *value* (not the containing key).
+/// `key_path` must carry an HKLM\ / HKCU\ prefix; HKCR/HKU are refused.
+/// Same protected-registry guard as [`delete_registry_key`].
+pub fn delete_registry_value(key_path: &str, value_name: &str) -> Result<()> {
+    use greek_common::{GreekError, RegistryHive};
+    #[cfg(target_os = "windows")]
+    {
+        use winreg::enums::*;
+        use winreg::RegKey;
+
+        let key_path = key_path.trim();
+        if key_path.is_empty() || value_name.trim().is_empty() {
+            return Err(GreekError::RegistryError(
+                "Empty registry key path or value name".to_string(),
+            ));
+        }
+        if is_protected_registry_path(key_path) {
+            return Err(GreekError::SafetyError(
+                "Refusing to delete protected registry value: <redacted>".to_string(),
+            ));
+        }
+        let lower = key_path.to_lowercase();
+        let hive = if lower.starts_with("hklm\\") {
+            RegistryHive::Hklm
+        } else if lower.starts_with("hkcu\\") {
+            RegistryHive::Hkcu
+        } else {
+            return Err(GreekError::RegistryError(
+                "Cannot determine registry hive from path (expected HKLM\\ or HKCU\\)".to_string(),
+            ));
+        };
+        // Strip the 5-char hive prefix ("HKLM\" / "HKCU\").
+        let subkey = &key_path.trim()[5..];
+        let root = match hive {
+            RegistryHive::Hklm => HKEY_LOCAL_MACHINE,
+            RegistryHive::Hkcu => HKEY_CURRENT_USER,
+        };
+        let key = RegKey::predef(root)
+            .open_subkey_with_flags(subkey, KEY_SET_VALUE)
+            .map_err(|_| GreekError::RegistryError("Failed to open registry key".to_string()))?;
+        key.delete_value(value_name.trim()).map_err(|_| {
+            GreekError::RegistryError("Failed to delete registry value".to_string())
+        })?;
+        tracing::info!("Deleted registry value: <redacted>");
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (key_path, value_name);
+        Ok(())
+    }
+}
+
+/// Drop scan roots that are contained in another root (case-insensitive),
+/// so overlapping trees (e.g. `C:\Users\a` and `C:\Users`) are walked once.
+pub fn dedupe_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    use std::path::MAIN_SEPARATOR;
+    let mut norm: Vec<(String, PathBuf)> = roots
+        .into_iter()
+        .map(|p| {
+            let mut s = p.to_string_lossy().to_lowercase().replace(['/', '\\'], std::path::MAIN_SEPARATOR_STR);
+            while s.ends_with(std::path::MAIN_SEPARATOR) && s.len() > 3 {
+                s.pop();
+            }
+            (s, p)
+        })
+        .collect();
+    norm.sort_by_key(|a| a.0.len());
+    norm.dedup_by(|a, b| a.0 == b.0);
+    let mut kept: Vec<(String, PathBuf)> = Vec::new();
+    for (s, p) in norm {
+        let covered = kept.iter().any(|(ks, _)| {
+            s.len() > ks.len() && s.starts_with(ks.as_str()) && s.as_bytes().get(ks.len()) == Some(&(MAIN_SEPARATOR as u8))
+        });
+        if !covered {
+            kept.push((s, p));
+        }
+    }
+    kept.into_iter().map(|(_, p)| p).collect()
+}
+
 pub fn get_app_data_dir() -> Result<PathBuf> {
     let proj_dirs = directories::ProjectDirs::from("com", "reek", "reek-uninstaller").ok_or(
         GreekError::ConfigError("Failed to get project directories".to_string()),
@@ -347,6 +428,21 @@ mod tests {
             &protected
         ));
         assert!(!is_protected_path(Path::new("C:\\Users\\Test"), &protected));
+    }
+
+    #[test]
+    fn test_dedupe_roots_drops_contained() {
+        let roots = vec![
+            PathBuf::from("C:\\Users"),
+            PathBuf::from("C:\\Users\\rohit\\AppData"),
+            PathBuf::from("C:\\Users\\rohit\\AppData\\"),
+            PathBuf::from("D:\\Projects"),
+        ];
+        let out = dedupe_roots(roots);
+        assert_eq!(out.len(), 2);
+        let flat: Vec<String> = out.iter().map(|p| p.to_string_lossy().to_lowercase()).collect();
+        assert!(flat.iter().any(|s| s == "c:\\users"));
+        assert!(flat.iter().any(|s| s == "d:\\projects"));
     }
 
     #[test]

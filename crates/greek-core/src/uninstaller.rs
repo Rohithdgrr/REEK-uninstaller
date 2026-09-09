@@ -510,6 +510,80 @@ impl MsiUninstallStrategy {
     }
 }
 
+/// Store app uninstall strategy - removes UWP/MSIX packages via
+/// `Remove-AppxPackage`. Covers Store apps that carry no vendor uninstall
+/// string, which previously fell through to a force path that deleted
+/// nothing while reporting success.
+#[cfg(all(target_os = "windows", feature = "windows"))]
+pub struct StoreUninstallStrategy {
+    base: BaseUninstallStrategy,
+}
+
+#[cfg(all(target_os = "windows", feature = "windows"))]
+impl StoreUninstallStrategy {
+    pub fn new() -> Self {
+        Self {
+            base: BaseUninstallStrategy::new("store"),
+        }
+    }
+
+    fn package_family(app: &InstalledApp) -> Result<String> {
+        match &app.source {
+            greek_common::InstallSource::WindowsStore {
+                package_family_name,
+                ..
+            } if !package_family_name.trim().is_empty() => {
+                Ok(package_family_name.clone())
+            }
+            _ => Err(GreekError::UninstallError(
+                UninstallError::NoStrategyFound.to_string(),
+            )),
+        }
+    }
+}
+
+#[cfg(all(target_os = "windows", feature = "windows"))]
+#[async_trait]
+impl UninstallStrategy for StoreUninstallStrategy {
+    fn strategy_id(&self) -> &'static str {
+        self.base.strategy_id()
+    }
+
+    fn can_handle(&self, app: &InstalledApp) -> bool {
+        Self::package_family(app).is_ok()
+    }
+
+    async fn uninstall(
+        &self,
+        app: &InstalledApp,
+        _options: UninstallOptions,
+    ) -> Result<UninstallResult> {
+        let family = Self::package_family(app)?;
+        tracing::info!("Removing Store app: {} ({})", app.name, family);
+        let start_time = std::time::Instant::now();
+        greek_windows::store::WindowsStoreScanner::new()
+            .remove_store_app(&family)
+            .await
+            .map_err(|e| GreekError::UninstallError(e.to_string()))?;
+        Ok(UninstallResult {
+            app_id: app.id,
+            success: true,
+            strategy_used: self.strategy_id().to_string(),
+            duration: start_time.elapsed(),
+            ..Default::default()
+        })
+    }
+
+    async fn uninstall_silent(
+        &self,
+        app: &InstalledApp,
+        options: UninstallOptions,
+    ) -> Result<UninstallResult> {
+        // Store removal is already unattended.
+        self.uninstall(app, options).await
+    }
+}
+
 /// Force remove strategy - deletes files and registry directly
 pub struct ForceRemoveStrategy {
     base: BaseUninstallStrategy,
@@ -691,6 +765,8 @@ impl UninstallerManager {
 
         // Register default strategies
         manager.register_strategy(Box::new(MsiUninstallStrategy::new()));
+        #[cfg(all(target_os = "windows", feature = "windows"))]
+        manager.register_strategy(Box::new(StoreUninstallStrategy::new()));
         manager.register_strategy(Box::new(StandardUninstallStrategy::new()));
         manager.register_strategy(Box::new(ForceRemoveStrategy::new()));
 
@@ -766,6 +842,32 @@ mod tests {
             Some("MsiExec.exe /X{12345678-1234-1234-1234-123456789012}".to_string());
 
         assert!(strategy.can_handle(&app));
+    }
+
+    #[cfg(all(target_os = "windows", feature = "windows"))]
+    #[tokio::test]
+    async fn test_store_strategy_handles_packaged_apps_only() {
+        let strategy = StoreUninstallStrategy::new();
+
+        // Store app without any uninstall string is handled via Appx removal.
+        let store_app = InstalledApp::new(
+            "Store App".to_string(),
+            InstallSource::WindowsStore {
+                package_family_name: "StoreApp_abc123".to_string(),
+                package_full_name: "StoreApp_1.0_abc123".to_string(),
+            },
+        );
+        assert!(strategy.can_handle(&store_app));
+
+        // Registry apps are not Store-handled even without strings.
+        let reg_app = InstalledApp::new(
+            "Plain App".to_string(),
+            InstallSource::Registry {
+                hive: RegistryHive::Hklm,
+                key_path: "test".to_string(),
+            },
+        );
+        assert!(!strategy.can_handle(&reg_app));
     }
 
     #[tokio::test]

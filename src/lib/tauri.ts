@@ -13,6 +13,10 @@ export type AppEntry = {
   source_label: string;
   icon_path?: string | null;
   icon_color?: string | null;
+  /** False for entries with no real removal path — never shown. Defaults true for older backends. */
+  can_uninstall?: boolean;
+  /** True when a real extracted icon PNG is already cached. */
+  has_icon?: boolean;
 };
 
 export type AppDetails = {
@@ -123,16 +127,45 @@ export async function getSystemStats(): Promise<SystemStatsDto> {
   return invoke<SystemStatsDto>("get_system_stats");
 }
 
-export async function analyzeLeftovers(id: string): Promise<LeftoverDto[]> {
-  return invoke<LeftoverDto[]>("analyze_leftovers", { id });
+export async function analyzeLeftovers(id: string, refresh = false): Promise<LeftoverDto[]> {
+  return invoke<LeftoverDto[]>("analyze_leftovers", { id, refresh });
+}
+
+export type CleanLeftoverItem = {
+  path: string;
+  artifact_type: string;
+  safety: string;
+};
+
+export type CleanLeftoverResult = {
+  path: string;
+  deleted: boolean;
+  reason: string;
+};
+
+export async function cleanLeftoverArtifacts(
+  items: CleanLeftoverItem[],
+  force: boolean,
+): Promise<CleanLeftoverResult[]> {
+  return invoke<CleanLeftoverResult[]>("clean_leftover_artifacts", { items, force });
 }
 
 export async function uninstallApplications(payload: UninstallPayload): Promise<UninstallResultDto[]> {
   return invoke<UninstallResultDto[]>("uninstall_applications", { payload });
 }
 
+const iconCache = new Map<string, string | null>();
+
 export async function getAppIcon(id: string): Promise<string | null> {
-  return invoke<string | null>("get_app_icon", { id });
+  if (iconCache.has(id)) return iconCache.get(id) ?? null;
+  const v = await invoke<string | null>("get_app_icon", { id });
+  // Only cache hits; misses may appear after a rescan
+  if (v) iconCache.set(id, v);
+  return v;
+}
+
+export function clearIconCache() {
+  iconCache.clear();
 }
 
 export async function getAppResources(): Promise<Record<string, AppResourceDto>> {
@@ -143,14 +176,14 @@ export async function getAppResource(id: string): Promise<AppResourceDto | null>
   return invoke<AppResourceDto | null>("get_app_resource", { id });
 }
 
-export async function scanVideos(): Promise<VideoEntryDto[]> {
-  return invoke<VideoEntryDto[]>("scan_videos");
+export async function scanVideos(refresh = false): Promise<VideoEntryDto[]> {
+  return invoke<VideoEntryDto[]>("scan_videos", { refresh });
 }
 export async function deleteVideos(paths: string[]): Promise<string[]> {
   return invoke<string[]>("delete_videos", { paths });
 }
-export async function scanDevModules(): Promise<DevModuleDto[]> {
-  return invoke<DevModuleDto[]>("scan_dev_modules");
+export async function scanDevModules(refresh = false): Promise<DevModuleDto[]> {
+  return invoke<DevModuleDto[]>("scan_dev_modules", { refresh });
 }
 export async function cleanDevModules(paths: string[]): Promise<string[]> {
   return invoke<string[]>("clean_dev_modules", { paths });
@@ -177,8 +210,9 @@ export async function onUninstallProgressWithHeartbeat(
     cb(e);
   };
   const unlisten = await listen<UninstallProgressEvent>("uninstall-progress", (event) => wrapped(event.payload));
+  // Silent/MSI uninstallers can go quiet for minutes; warn at 30s, not 5s.
   const heartbeat = window.setInterval(() => {
-    if (Date.now() - lastEvent > 5000) {
+    if (Date.now() - lastEvent > 30000) {
       onHeartbeatLost?.();
     }
   }, 5000);

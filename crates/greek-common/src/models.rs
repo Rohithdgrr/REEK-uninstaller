@@ -142,6 +142,52 @@ impl InstalledApp {
         !self.is_os_critical() && !self.is_inbox_default()
     }
 
+    /// Whether REEK has any supported removal path for this app, so the
+    /// desktop list only shows applications that can actually be deleted.
+    ///
+    /// A real vendor uninstaller is required for Registry apps
+    /// (`uninstall_string` / `quiet_uninstall_string` / `modify_string`):
+    /// bare `install_location` / `registry_keys` alone only allow a raw
+    /// force-delete of files and are hidden — those are the entries users
+    /// perceive as "can't be deleted" (clicking Uninstall just fails).
+    /// Store / Portable / PackageManager / Feature / Extension sources use
+    /// their own native removal path instead of a vendor string.
+    pub fn has_removal_path(&self) -> bool {
+        let has_vendor_uninstaller = self
+            .uninstall_string
+            .as_ref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+            || self
+                .quiet_uninstall_string
+                .as_ref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false)
+            || self
+                .modify_string
+                .as_ref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+        if has_vendor_uninstaller {
+            return true;
+        }
+        match &self.source {
+            InstallSource::WindowsStore {
+                package_family_name,
+                ..
+            } => !package_family_name.trim().is_empty(),
+            InstallSource::Portable { .. } => self.install_location.is_some(),
+            InstallSource::PackageManager { package_id, .. } => !package_id.trim().is_empty(),
+            InstallSource::WindowsFeature { feature_name } => !feature_name.trim().is_empty(),
+            InstallSource::BrowserExtension { extension_id, .. } => {
+                !extension_id.trim().is_empty()
+            }
+            // Registry (and anything else): no vendor uninstaller => not
+            // deletable, even if stale install_location / registry keys exist.
+            InstallSource::Registry { .. } => false,
+        }
+    }
+
     pub fn display_name(&self) -> String {
         if let Some(ref version) = self.version {
             format!("{} {}", self.name, version)

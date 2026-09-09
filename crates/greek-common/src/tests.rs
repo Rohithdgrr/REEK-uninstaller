@@ -51,6 +51,78 @@ mod model_tests {
     }
 
     #[test]
+    fn test_has_removal_path() {
+        // Bare entry: nothing to act on -> hidden from the desktop list.
+        let bare = InstalledApp::new(
+            "Ghost Entry".to_string(),
+            InstallSource::Registry {
+                hive: RegistryHive::Hklm,
+                key_path: "test".to_string(),
+            },
+        );
+        assert!(!bare.has_removal_path());
+
+        // Vendor uninstall string suffices.
+        let mut s = bare.clone();
+        s.uninstall_string = Some("C:\\App\\uninstall.exe /S".to_string());
+        assert!(s.has_removal_path());
+
+        // Quiet / modify strings also count as a vendor uninstaller.
+        let mut q = bare.clone();
+        q.quiet_uninstall_string = Some("C:\\App\\uninstall.exe /S".to_string());
+        assert!(q.has_removal_path());
+        let mut m = bare.clone();
+        m.modify_string = Some("C:\\App\\setup.exe /modify".to_string());
+        assert!(m.has_removal_path());
+
+        // Install location alone is NOT enough for Registry apps (no real
+        // uninstaller — those entries fail at click time, so they stay hidden).
+        let mut l = bare.clone();
+        l.install_location = Some(std::path::PathBuf::from("C:\\Apps\\Thing"));
+        assert!(!l.has_removal_path());
+
+        // Registry keys alone are NOT enough either.
+        let mut r = bare.clone();
+        r.registry_keys = vec![crate::models::RegistryKey {
+            hive: RegistryHive::Hklm,
+            path: "HKLM\\Software\\Thing".to_string(),
+            values: std::collections::HashMap::new(),
+        }];
+        assert!(!r.has_removal_path());
+
+        // Portable apps ARE deletable via their folder.
+        let mut p = InstalledApp::new(
+            "Portable Thing".to_string(),
+            InstallSource::Portable {
+                detected_path: std::path::PathBuf::from("C:\\Apps\\Thing"),
+                confidence: 0.9,
+            },
+        );
+        p.install_location = Some(std::path::PathBuf::from("C:\\Apps\\Thing"));
+        assert!(p.has_removal_path());
+
+        // Store package with family name is removable via Remove-AppxPackage.
+        let store = InstalledApp::new(
+            "Store Thing".to_string(),
+            InstallSource::WindowsStore {
+                package_family_name: "Thing_abc123".to_string(),
+                package_full_name: "Thing_1.0_abc123".to_string(),
+            },
+        );
+        assert!(store.has_removal_path());
+
+        // Store entry without identity is not.
+        let store_empty = InstalledApp::new(
+            "Store Ghost".to_string(),
+            InstallSource::WindowsStore {
+                package_family_name: String::new(),
+                package_full_name: String::new(),
+            },
+        );
+        assert!(!store_empty.has_removal_path());
+    }
+
+    #[test]
     fn test_leftover_artifact_creation() {
         let artifact =
             LeftoverArtifact::new(ArtifactType::Directory, std::path::PathBuf::from("/test"));

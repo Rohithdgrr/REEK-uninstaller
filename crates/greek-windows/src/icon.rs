@@ -101,14 +101,16 @@ impl IconExtractor {
                 return Some(path);
             }
         }
-        // 5. Last resort: scan install_location dir without poor filter (if we skipped earlier due to poor)
+        // 5. Last resort: scan install_location dir without poor filter (if we skipped earlier due to poor).
+        // NOTE: never fall back to the directory itself — that yields a
+        // generic folder glyph for every icon-less app, which looks like a
+        // fake "real" icon. Returning None lets the UI show a tinted
+        // placeholder instead of a misleading folder.
         if let Some(loc) = &app.install_location {
             if loc.is_dir() {
                 if let Some(any_exe) = Self::find_any_exe_in_dir(loc) {
                     return Some(any_exe);
                 }
-                // Final fallback: use the directory itself (yields generic folder icon rather than initials)
-                return Some(loc.clone());
             }
         }
         None

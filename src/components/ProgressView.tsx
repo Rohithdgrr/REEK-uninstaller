@@ -4,10 +4,12 @@ export function ProgressView({
   current,
   total,
   logs,
+  onCancel,
 }: {
   current: number;
   total: number;
   logs: string[];
+  onCancel?: () => void;
 }) {
   const pct = total === 0 ? 0 : Math.round((current / total) * 100);
   const ref = useRef<HTMLDivElement>(null);
@@ -70,7 +72,7 @@ export function ProgressView({
       </div>
 
       <div className="flex justify-end">
-        <button className="rounded-full border border-[rgba(255,255,255,0.08)] px-5 py-1.5 text-[13px] text-[#6B6661] hover:text-[#F5F0EB] transition">Cancel</button>
+        <button onClick={onCancel} className="rounded-full border border-[rgba(255,255,255,0.08)] px-5 py-1.5 text-[13px] text-[#6B6661] hover:text-[#F5F0EB] transition">Cancel</button>
       </div>
     </div>
   );

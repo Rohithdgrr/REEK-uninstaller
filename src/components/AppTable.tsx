@@ -1,31 +1,18 @@
-import { useEffect, useState, memo, useCallback } from "react";
+import { useEffect, useState, memo } from "react";
 import { ArrowUpDown, Package, Check, Minus, ChevronRight, Sparkles } from "lucide-react";
 import type { AppEntry, AppResourceDto } from "../lib/tauri";
-import { getAppIcon, getAppResources } from "../lib/tauri";
+import { getAppIcon } from "../lib/tauri";
 import { useAppStore } from "../store/useAppStore";
 
-export function AppTable({ apps, onDetails }: { apps: AppEntry[]; onDetails?: (id: string) => void }) {
+export function AppTable({ apps, resources, onDetails }: { apps: AppEntry[]; resources?: Record<string, AppResourceDto>; onDetails?: (id: string) => void }) {
   const { selected, toggleSelect, toggleSelectAll, sortKey, sortDir, setSort } = useAppStore();
   const visibleIds = apps.map((a) => a.id);
   const allChecked = visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
   const indeterminate = !allChecked && visibleIds.some((id) => selected.has(id));
-  const [resources, setResources] = useState<Record<string, AppResourceDto>>({});
+  const resMap = resources ?? {};
 
-  useEffect(() => {
-    let alive = true;
-    const fetchRes = async () => {
-      try {
-        const m = await getAppResources();
-        if (alive) setResources(m);
-      } catch {}
-    };
-    fetchRes();
-    const id = setInterval(fetchRes, 3000);
-    return () => { alive = false; clearInterval(id); };
-  }, [apps.length]);
-
-  const handleSelect = useCallback((id: string) => toggleSelect(id), [toggleSelect]);
-  const handleSelectAll = useCallback(() => toggleSelectAll(visibleIds), [toggleSelectAll, visibleIds]);
+  const handleSelect = (id: string) => toggleSelect(id);
+  const handleSelectAll = () => toggleSelectAll(visibleIds);
 
   return (
     <div className="overflow-hidden rounded-[16px] border border-[rgba(225,29,72,0.08)] bg-[#0A0A0A]" role="table" aria-label="Installed applications">
@@ -72,7 +59,7 @@ export function AppTable({ apps, onDetails }: { apps: AppEntry[]; onDetails?: (i
               app={app}
               idx={idx}
               isSelected={selected.has(app.id)}
-              res={resources[app.id]}
+              res={resMap[app.id]}
               onDetails={onDetails}
               onToggle={handleSelect}
             />
@@ -182,32 +169,63 @@ function formatDate(d?: string | null) {
 
 function AppIcon({ app, running, selected }: { app: AppEntry; running?: boolean; selected: boolean }) {
   const [b64, setB64] = useState<string | null>(null);
-  const hasIcon = !!app.icon_path;
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    if (!hasIcon) return;
+    // Always attempt the real icon — backend extracts on-demand (Jumbo
+    // 256px) even when scan-time extraction missed, so every visible row
+    // converges to a real high-quality icon instead of initials.
+    // icon_path is only a hint; never gate the fetch on it.
     let cancelled = false;
+    setB64(null);
+    setFailed(false);
     getAppIcon(app.id)
-      .then((v) => { if (!cancelled && v) setB64(v); })
-      .catch(() => {});
+      .then((v) => { if (!cancelled && v) setB64(v); else if (!cancelled) setFailed(true); })
+      .catch(() => { if (!cancelled) setFailed(true); });
     return () => { cancelled = true; };
-  }, [app.id, hasIcon]);
+  }, [app.id]);
 
-  const base = "w-10 h-10 rounded-[12px] shrink-0 flex items-center justify-center overflow-hidden relative";
+  // 44px box: backend serves 256px Jumbo PNGs, so downscaling stays crisp
+  // on retina. object-contain preserves glyph shape; p-[3px] keeps padding
+  // tight so small glyphs stay legible.
+  const base = "w-11 h-11 rounded-[12px] shrink-0 flex items-center justify-center overflow-hidden relative";
 
   if (b64) {
     return (
-      <div className={`${base} border ${selected ? "border-[rgba(225,29,72,0.22)] shadow-[0_0_16px_rgba(225,29,72,0.12)]" : "border-[rgba(225,29,72,0.08)]"} bg-[#141414]`}>
-        <img src={`data:image/png;base64,${b64}`} alt="" className="w-full h-full object-contain p-1" loading="lazy" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+      <div className={`${base} border ${selected ? "border-[rgba(225,29,72,0.22)] shadow-[0_0_16px_rgba(225,29,72,0.12)]" : "border-[rgba(225,29,72,0.08)]"} bg-black`}>
+        <img
+          src={`data:image/png;base64,${b64}`}
+          alt={`${app.name} icon`}
+          draggable={false}
+          decoding="async"
+          loading="lazy"
+          className="w-full h-full object-contain p-[3px]"
+          style={{ imageRendering: "auto" } as React.CSSProperties}
+          onError={() => setFailed(true)}
+        />
         {running && <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#11FF99] border-2 border-[#0A0A0A] shadow-[0_0_6px_rgba(17,255,153,0.7)]" />}
       </div>
     );
   }
 
+  // Loading placeholder: shimmer while the real icon resolves.
+  if (!failed) {
+    return (
+      <div className={`${base} bg-[#141414] border ${selected ? "border-[rgba(225,29,72,0.18)]" : "border-[rgba(225,29,72,0.06)]"}`} aria-hidden>
+        <div className="w-full h-full animate-pulse bg-gradient-to-br from-[#1E1E1E] via-[#242424] to-[#1A1A1A] flex items-center justify-center text-[#4A4540] text-[11px] font-bold">
+          {app.name.slice(0, 2).toUpperCase()}
+        </div>
+        {running && <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#11FF99] border-2 border-[#0A0A0A]" />}
+      </div>
+    );
+  }
+
+  // Final fallback (no extractable icon): initials tinted by the icon's
+  // dominant color so the row still looks intentional, never blank.
   if (app.icon_color) {
     const bg = `rgb(${app.icon_color})`;
     return (
-      <div className={`${base} border ${selected ? "border-[rgba(225,29,72,0.22)]" : "border-[rgba(225,29,72,0.08)]"} text-white text-[11px] font-bold`} style={{ backgroundColor: bg }}>
+      <div className={`${base} border ${selected ? "border-[rgba(225,29,72,0.22)]" : "border-[rgba(225,29,72,0.08)]"} text-white text-[12px] font-bold`} style={{ backgroundColor: bg }}>
         {app.name.slice(0, 2).toUpperCase()}
         {running && <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#11FF99] border-2 border-[#0A0A0A]" />}
       </div>
@@ -215,7 +233,7 @@ function AppIcon({ app, running, selected }: { app: AppEntry; running?: boolean;
   }
 
   return (
-    <div className={`${base} bg-[#1A1A1A] border ${selected ? "border-[rgba(225,29,72,0.18)]" : "border-[rgba(225,29,72,0.06)]"} text-[#A8A39E] text-[11px] font-bold`}>
+    <div className={`${base} bg-[#1A1A1A] border ${selected ? "border-[rgba(225,29,72,0.18)]" : "border-[rgba(225,29,72,0.06)]"} text-[#A8A39E] text-[12px] font-bold`}>
       {app.name.slice(0, 2).toUpperCase()}
       {running && <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#11FF99] border-2 border-[#0A0A0A]" />}
     </div>

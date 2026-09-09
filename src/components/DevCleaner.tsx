@@ -23,10 +23,10 @@ export function DevCleaner({ onCleaned }: { onCleaned?: (count: number, bytes: n
   const [cleaning, setCleaning] = useState(false);
   const [filterLang, setFilterLang] = useState<string>("All");
 
-  const load = async () => {
+  const load = async (refresh = false) => {
     setLoading(true);
     try {
-      const m = await scanDevModules();
+      const m = await scanDevModules(refresh);
       setModules(m);
     } catch (e) { console.error(e); setModules([]); }
     finally { setLoading(false); }
@@ -109,7 +109,7 @@ export function DevCleaner({ onCleaned }: { onCleaned?: (count: number, bytes: n
             <p className="text-[11px] text-[#6B6661]">{loading ? "Scanning whole device…" : `${filtered.length} modules • ${totalDisplay} reclaimable`}</p>
           </div>
         </div>
-        <button onClick={load} disabled={loading} className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-[#141414] px-3 py-1.5 text-xs text-[#A8A39E] hover:text-white disabled:opacity-50">
+        <button onClick={() => load(true)} disabled={loading} className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-[#141414] px-3 py-1.5 text-xs text-[#A8A39E] hover:text-white disabled:opacity-50">
           {loading ? <Loader2 size={12} className="animate-spin"/> : <Search size={12}/>} {loading ? "Scanning…" : "Rescan"}
         </button>
       </div>

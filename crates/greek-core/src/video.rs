@@ -96,57 +96,71 @@ impl VideoScanner {
     }
 
     pub async fn scan_all(&self) -> Result<Vec<VideoEntry>> {
-        let roots = Self::build_roots();
+        let roots = crate::utils::dedupe_roots(Self::build_roots());
         let min_size = self.min_size_bytes;
         let max_depth = self.max_depth;
         let entries = tokio::task::spawn_blocking(move || {
-            let mut all = Vec::new();
-            for root in roots {
-                let is_drive_root = root.to_string_lossy().len() <= 3;
-                let depth = if is_drive_root { 4 } else { max_depth };
-                for entry in WalkDir::new(&root)
-                    .max_depth(depth)
-                    .follow_links(false)
-                    .into_iter()
-                    .filter_map(|e| e.ok())
-                {
-                    let path = entry.path();
-                    if !path.is_file() { continue; }
-                    if !is_video(path) { continue; }
-                    // Skip tiny files < min_size (avoid thumbs)
-                    let meta = match std::fs::metadata(path) { Ok(m) => m, Err(_) => continue };
-                    let size = meta.len();
-                    if size < min_size { continue; }
-                    // Skip protected paths
-                    let protected = greek_common::PROTECTED_PATHS.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-                    if greek_common::is_protected_path(path, &protected) { continue; }
-                    let modified = meta.modified().ok()
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .and_then(|d| chrono::NaiveDateTime::from_timestamp_opt(d.as_secs() as i64, 0));
-                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                    let drive = path.to_string_lossy().chars().take(2).collect::<String>().to_uppercase().replace(":", "");
-                    all.push(VideoEntry {
-                        id: Uuid::new_v4(),
-                        path: path.to_path_buf(),
-                        name,
-                        extension: ext,
-                        size_bytes: size,
-                        size_display: humansize::format_size(size, humansize::BINARY),
-                        modified,
-                        drive,
-                    });
-                    if all.len() > 5000 { break; } // cap
-                }
-            }
-            // Dedup by path
+            use rayon::prelude::*;
+            let protected: Vec<String> = greek_common::PROTECTED_PATHS
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            // Walk each root on the thread pool; merge at the end.
+            let mut all: Vec<VideoEntry> = roots
+                .into_par_iter()
+                .map(|root| {
+                    let mut local = Vec::new();
+                    let is_drive_root = root.to_string_lossy().len() <= 3;
+                    let depth = if is_drive_root { 4 } else { max_depth };
+                    for entry in WalkDir::new(&root)
+                        .max_depth(depth)
+                        .follow_links(false)
+                        .into_iter()
+                        .filter_map(|e| e.ok())
+                    {
+                        // Extension check first (no syscalls); reuse the dir
+                        // entry metadata instead of a second stat call.
+                        if !is_video(entry.path()) { continue; }
+                        let meta = match entry.metadata() { Ok(m) => m, Err(_) => continue };
+                        if !meta.is_file() { continue; }
+                        let size = meta.len();
+                        if size < min_size { continue; } // skip thumbs
+                        let path = entry.path();
+                        if greek_common::is_protected_path(path, &protected) { continue; }
+                        let modified = meta.modified().ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .and_then(|d| chrono::DateTime::from_timestamp(d.as_secs() as i64, 0))
+                            .map(|dt| dt.naive_utc());
+                        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                        let drive = path.to_string_lossy().chars().take(2).collect::<String>().to_uppercase().replace(":", "");
+                        local.push(VideoEntry {
+                            id: Uuid::new_v4(),
+                            path: path.to_path_buf(),
+                            name,
+                            extension: ext,
+                            size_bytes: size,
+                            size_display: humansize::format_size(size, humansize::BINARY),
+                            modified,
+                            drive,
+                        });
+                        if local.len() > 5000 { break; } // cap per root
+                    }
+                    local
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .flatten()
+                .collect();
+            // Dedup by path, biggest first, hard cap.
             let mut seen = std::collections::HashSet::new();
             let mut dedup = Vec::new();
-            for v in all {
+            for v in all.drain(..) {
                 let k = v.path.to_string_lossy().to_lowercase();
                 if seen.insert(k) { dedup.push(v); }
             }
-            dedup.sort_by(|a,b| b.size_bytes.cmp(&a.size_bytes));
+            dedup.sort_by_key(|a| std::cmp::Reverse(a.size_bytes));
+            if dedup.len() > 5000 { dedup.truncate(5000); }
             dedup
         }).await.map_err(|e| greek_common::GreekError::ScanError(format!("video scan join: {}", e)))?;
         Ok(entries)

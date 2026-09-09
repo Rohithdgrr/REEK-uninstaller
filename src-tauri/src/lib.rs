@@ -6,7 +6,41 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
 
 // ---------- Shared state ----------
-struct AppRegistry(Mutex<HashMap<String, InstalledApp>>);
+/// JSON-serialized scan payload with a timestamp for TTL caching.
+struct CachedScans {
+    at: std::time::Instant,
+    payload: String,
+}
+
+impl CachedScans {
+    fn fresh(&self) -> bool {
+        self.at.elapsed() < std::time::Duration::from_secs(60)
+    }
+}
+
+struct AppRegistry {
+    apps: Mutex<HashMap<String, InstalledApp>>,
+    videos: Mutex<Option<CachedScans>>,
+    dev_modules: Mutex<Option<CachedScans>>,
+    leftovers: Mutex<HashMap<String, CachedScans>>,
+}
+
+impl AppRegistry {
+    fn new() -> Self {
+        Self {
+            apps: Mutex::new(HashMap::new()),
+            videos: Mutex::new(None),
+            dev_modules: Mutex::new(None),
+            leftovers: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn invalidate_leftovers_for(&self, id: &str) {
+        if let Ok(mut m) = self.leftovers.lock() {
+            m.remove(id);
+        }
+    }
+}
 
 // ---------- DTOs ----------
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +56,23 @@ pub struct AppEntry {
     pub source_label: String,
     pub icon_path: Option<String>,
     pub icon_color: Option<String>,
+    /// True when REEK has a real removal path for this app (vendor
+    /// uninstaller or native Store/Portable/Package removal). The desktop
+    /// list only shows deletable apps; the frontend also filters on this
+    /// as defense-in-depth so a stale cache can never surface a
+    /// non-deletable row.
+    #[serde(default = "default_true")]
+    pub can_uninstall: bool,
+    /// True when a real extracted icon PNG is already cached for this app.
+    /// Rows with false still attempt on-demand extraction via get_app_icon,
+    /// so every visible row converges to a real high-quality icon instead
+    /// of initials.
+    #[serde(default)]
+    pub has_icon: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl From<InstalledApp> for AppEntry {
@@ -38,6 +89,8 @@ impl From<InstalledApp> for AppEntry {
             },
         }
         .to_string();
+        let has_icon = a.icon_path.is_some();
+        let can_uninstall = a.has_removal_path();
         Self {
             id: a.id.to_string(),
             name: a.name.clone(),
@@ -50,6 +103,8 @@ impl From<InstalledApp> for AppEntry {
             source_label,
             icon_path: a.icon_path.as_ref().map(|p| p.to_string_lossy().to_string()),
             icon_color: a.metadata.get("icon_color").cloned(),
+            can_uninstall,
+            has_icon,
         }
     }
 }
@@ -344,16 +399,21 @@ async fn real_scan() -> Result<Vec<InstalledApp>, String> {
 // ---------- Commands ----------
 #[tauri::command]
 async fn scan_applications(registry: State<'_, AppRegistry>) -> Result<Vec<AppEntry>, String> {
+    // On Windows, never mask a real scan failure with mock data:
+    // fake C:\Program Files entries can never uninstall and look like app bugs.
+    // Mocks stay dev-only for non-Windows targets.
     let mut apps = match real_scan().await {
         Ok(v) if !v.is_empty() => v,
-        Ok(empty) => {
+        Ok(_) => {
             if cfg!(target_os = "windows") {
-                eprintln!("[scan] returned 0, fallback mock");
-                if empty.is_empty() { mock_apps() } else { empty }
+                return Err("Scan returned 0 applications. Try running as Administrator, then Scan again.".into());
             } else { mock_apps() }
         }
         Err(e) => {
-            eprintln!("[scan] failed {e}, fallback mock");
+            if cfg!(target_os = "windows") {
+                return Err(format!("Scan failed ({e}). Try running as Administrator, then Scan again."));
+            }
+            eprintln!("[scan] failed {e}, fallback mock (non-Windows dev)");
             mock_apps()
         }
     };
@@ -364,8 +424,15 @@ async fn scan_applications(registry: State<'_, AppRegistry>) -> Result<Vec<AppEn
     if before != apps.len() {
         eprintln!("[scan] filtered {} OS-critical apps (showing {})", before - apps.len(), apps.len());
     }
+    // Same for entries with no supported removal path: the desktop list only
+    // shows applications that can actually be deleted.
+    let before_removal = apps.len();
+    apps.retain(|a| a.has_removal_path());
+    if before_removal != apps.len() {
+        eprintln!("[scan] filtered {} apps with no removal path (showing {})", before_removal - apps.len(), apps.len());
+    }
     {
-        let mut map = registry.0.lock().map_err(|e| format!("lock {e}"))?;
+        let mut map = registry.apps.lock().map_err(|e| format!("lock {e}"))?;
         map.clear();
         for a in &apps { map.insert(a.id.to_string(), a.clone()); }
     }
@@ -375,7 +442,7 @@ async fn scan_applications(registry: State<'_, AppRegistry>) -> Result<Vec<AppEn
 #[tauri::command]
 async fn get_app_details(registry: State<'_, AppRegistry>, id: String) -> Result<AppDetails, String> {
     validate_single_id(&id)?;
-    let map = registry.0.lock().map_err(|e| format!("lock {e}"))?;
+    let map = registry.apps.lock().map_err(|e| format!("lock {e}"))?;
     let app = map.get(&id).ok_or_else(|| format!("App {id} not found. Re-scan."))?;
     Ok(AppDetails::from(app.clone()))
 }
@@ -400,11 +467,42 @@ async fn get_system_stats() -> Result<SystemStatsDto, String> {
     Ok(dto)
 }
 
+fn leftover_to_dto(a: greek_common::LeftoverArtifact) -> LeftoverDto {
+    let size_display = a.size_bytes.map(|b| humansize::format_size(b, humansize::BINARY));
+    LeftoverDto {
+        id: a.id.to_string(),
+        artifact_type: format!("{:?}", a.artifact_type),
+        path: a.path.to_string_lossy().to_string(),
+        size_bytes: a.size_bytes,
+        size_display,
+        confidence: a.confidence,
+        safety: format!("{:?}", a.safety_level),
+        description: Some(a.description.clone()),
+    }
+}
+
 #[tauri::command]
-async fn analyze_leftovers(registry: State<'_, AppRegistry>, id: String) -> Result<Vec<LeftoverDto>, String> {
+async fn analyze_leftovers(
+    registry: State<'_, AppRegistry>,
+    id: String,
+    refresh: Option<bool>,
+) -> Result<Vec<LeftoverDto>, String> {
     validate_single_id(&id)?;
+    // 60s TTL cache: repeat drawer opens must not re-walk the device.
+    // Manual Rescan passes refresh=true to bypass it.
+    if !refresh.unwrap_or(false) {
+        if let Ok(map) = registry.leftovers.lock() {
+            if let Some(hit) = map.get(&id) {
+                if hit.fresh() {
+                    if let Ok(dtos) = serde_json::from_str::<Vec<LeftoverDto>>(&hit.payload) {
+                        return Ok(dtos);
+                    }
+                }
+            }
+        }
+    }
     let app = {
-        let map = registry.0.lock().map_err(|e| format!("lock {e}"))?;
+        let map = registry.apps.lock().map_err(|e| format!("lock {e}"))?;
         map.get(&id).cloned().ok_or_else(|| format!("App {id} not found"))?
     };
     use greek_common::GreekConfig;
@@ -412,19 +510,84 @@ async fn analyze_leftovers(registry: State<'_, AppRegistry>, id: String) -> Resu
     let config = GreekConfig::default();
     let mut svc = GreekAppService::new(config).map_err(|e| e.to_string())?;
     let artifacts = svc.analyze_leftovers(&app).await.map_err(|e| e.to_string())?;
-    Ok(artifacts.into_iter().map(|a| {
-        let size_display = a.size_bytes.map(|b| humansize::format_size(b, humansize::BINARY));
-        LeftoverDto {
-            id: a.id.to_string(),
-            artifact_type: format!("{:?}", a.artifact_type),
-            path: a.path.to_string_lossy().to_string(),
-            size_bytes: a.size_bytes,
-            size_display,
-            confidence: a.confidence,
-            safety: format!("{:?}", a.safety_level),
-            description: Some(a.description.clone()),
+    let dtos: Vec<LeftoverDto> = artifacts.into_iter().map(leftover_to_dto).collect();
+    if let Ok(payload) = serde_json::to_string(&dtos) {
+        if let Ok(mut map) = registry.leftovers.lock() {
+            map.insert(id, CachedScans { at: std::time::Instant::now(), payload });
         }
-    }).collect())
+    }
+    Ok(dtos)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CleanLeftoverItem {
+    pub path: String,
+    pub artifact_type: String,
+    pub safety: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CleanLeftoverResultDto {
+    pub path: String,
+    pub deleted: bool,
+    pub reason: String,
+}
+
+fn validate_clean_items(items: &[CleanLeftoverItem]) -> Result<(), String> {
+    if items.is_empty() {
+        return Err("No leftover items provided".into());
+    }
+    if items.len() > MAX_PATHS_PER_REQUEST {
+        return Err(format!("Too many items (max {MAX_PATHS_PER_REQUEST})"));
+    }
+    for it in items {
+        let t = it.path.trim();
+        if t.is_empty() || t.len() > MAX_PATH_LEN {
+            return Err(format!("Invalid path length: {}", t.len()));
+        }
+        if t.contains('\0') {
+            return Err("Path contains null byte".into());
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn clean_leftover_artifacts(
+    registry: State<'_, AppRegistry>,
+    items: Vec<CleanLeftoverItem>,
+    force: bool,
+) -> Result<Vec<CleanLeftoverResultDto>, String> {
+    validate_clean_items(&items)?;
+    use greek_common::GreekConfig;
+    use greek_core::{CleanLeftoverRequest, GreekAppService};
+    let config = GreekConfig::default();
+    let svc = GreekAppService::new(config).map_err(|e| e.to_string())?;
+    // Explicit user-confirmed clean deletes regardless of safety level
+    // (protected paths are still always refused); auto-clean passes
+    // only_safe = true via the internal path instead.
+    let reqs: Vec<CleanLeftoverRequest> = items
+        .into_iter()
+        .map(|i| CleanLeftoverRequest {
+            path: i.path,
+            artifact_type: i.artifact_type,
+            safety: i.safety,
+        })
+        .collect();
+    let outcomes = svc.clean_leftover_paths(reqs, !force).await;
+    // Cleaned results change what a rescan shows: drop cached scans.
+    if let Ok(mut m) = registry.leftovers.lock() {
+        m.clear();
+    }
+    Ok(outcomes
+        .into_iter()
+        .map(|o| CleanLeftoverResultDto {
+            path: o.path,
+            deleted: o.deleted,
+            reason: o.reason,
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -436,7 +599,7 @@ async fn uninstall_applications(
     validate_ids(&payload.ids)?;
     let total = payload.ids.len();
     let targets: Vec<InstalledApp> = {
-        let map = registry.0.lock().map_err(|e| format!("lock {e}"))?;
+        let map = registry.apps.lock().map_err(|e| format!("lock {e}"))?;
         let mut out = Vec::new();
         for id in &payload.ids {
             if let Some(a) = map.get(id) {
@@ -452,9 +615,9 @@ async fn uninstall_applications(
         out
     };
     use greek_common::{GreekConfig, UninstallOptions};
-    use greek_core::GreekAppService;
+    use greek_core::{CleanLeftoverRequest, GreekAppService};
     let config = GreekConfig::default();
-    let svc = GreekAppService::new(config).map_err(|e| e.to_string())?;
+    let mut svc = GreekAppService::new(config).map_err(|e| e.to_string())?;
     let mut results = Vec::new();
     let mut seq: u64 = 0;
     // Rate limiting: ensure at most 100 events/sec (10ms min interval). Since uninstall is sequential
@@ -479,7 +642,36 @@ async fn uninstall_applications(
         let res = if payload.force { svc.force_remove_app(app, opts.clone()).await } else { svc.uninstall_app(app, opts.clone()).await };
         match res {
             Ok(r) => {
-                let log = if r.success { format!("{} via {} (files:{}, regs:{})", app.name, r.strategy_used, r.files_deleted.len(), r.registry_keys_deleted.len()) } else { r.errors.join("; ") };
+                // Auto-clean Safe leftovers after a successful removal so
+                // "uninstall" actually uninstalls (non-Safe items stay for
+                // explicit cleaning via clean_leftover_artifacts).
+                let mut leftover_note = String::new();
+                if r.success {
+                    match svc.analyze_leftovers(app).await {
+                        Ok(arts) => {
+                            let safe: Vec<CleanLeftoverRequest> = arts
+                                .into_iter()
+                                .filter(|a| a.is_safe_to_delete())
+                                .map(|a| CleanLeftoverRequest {
+                                    path: a.path.to_string_lossy().to_string(),
+                                    artifact_type: format!("{:?}", a.artifact_type),
+                                    safety: format!("{:?}", a.safety_level),
+                                })
+                                .collect();
+                            if !safe.is_empty() {
+                                let n = safe.len();
+                                let outcomes = svc.clean_leftover_paths(safe, true).await;
+                                let cleaned = outcomes.iter().filter(|o| o.deleted).count();
+                                leftover_note = format!(", leftovers:{cleaned}/{n}");
+                                registry.invalidate_leftovers_for(&app.id.to_string());
+                            }
+                        }
+                        Err(e) => {
+                            leftover_note = format!(", leftover-scan skipped ({e})");
+                        }
+                    }
+                }
+                let log = if r.success { format!("{} via {} (files:{}, regs:{}{})", app.name, r.strategy_used, r.files_deleted.len(), r.registry_keys_deleted.len(), leftover_note) } else { r.errors.join("; ") };
                 let status = if r.success { "done" } else { "error" };
                 seq += 1;
                 let elapsed2 = last_emit.elapsed();
@@ -509,27 +701,25 @@ async fn uninstall_applications(
         seq, current: total, total, app_name: "complete".into(), status: "completed".into(),
         log: format!("Batch complete: {} succeeded, {} failed", results.iter().filter(|r| r.success).count(), results.iter().filter(|r| !r.success).count())
     });
-    { let mut map = registry.0.lock().map_err(|e| format!("lock {e}"))?; for r in &results { if r.success { map.remove(&r.id); } } }
+    {
+        let mut map = registry.apps.lock().map_err(|e| format!("lock {e}"))?;
+        for r in &results {
+            if r.success {
+                map.remove(&r.id);
+                registry.invalidate_leftovers_for(&r.id);
+            }
+        }
+    }
     Ok(results)
 }
 
-#[tauri::command]
-async fn get_app_icon(registry: State<'_, AppRegistry>, id: String) -> Result<Option<String>, String> {
-    validate_single_id(&id)?;
-    let path_opt = {
-        let map = registry.0.lock().map_err(|e| format!("lock {e}"))?;
-        map.get(&id).and_then(|a| a.icon_path.clone())
-    };
-    let Some(path) = path_opt else {
-        return Ok(None);
-    };
-    // Ensure file still exists
+/// Read a cached icon PNG off disk and base64 it for the WebView.
+async fn serve_icon_file(path: std::path::PathBuf) -> Result<Option<String>, String> {
     if !path.exists() {
         return Ok(None);
     }
     // Offload blocking read + base64 to thread pool
-    let p = path.clone();
-    let bytes = tokio::task::spawn_blocking(move || std::fs::read(&p))
+    let bytes = tokio::task::spawn_blocking(move || std::fs::read(&path))
         .await
         .map_err(|e| format!("join {e}"))?
         .map_err(|e| format!("read icon {e}"))?;
@@ -537,8 +727,62 @@ async fn get_app_icon(registry: State<'_, AppRegistry>, id: String) -> Result<Op
     if bytes.len() > 2 * 1024 * 1024 {
         return Err("icon too large".into());
     }
+    // Reject truncated/corrupt caches instead of serving broken images.
+    if bytes.len() < 64 {
+        return Ok(None);
+    }
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     Ok(Some(b64))
+}
+
+#[tauri::command]
+async fn get_app_icon(registry: State<'_, AppRegistry>, id: String) -> Result<Option<String>, String> {
+    validate_single_id(&id)?;
+    let app_opt = {
+        let map = registry.apps.lock().map_err(|e| format!("lock {e}"))?;
+        map.get(&id).cloned()
+    };
+    let Some(app) = app_opt else {
+        return Ok(None);
+    };
+    // Fast path: previously extracted PNG.
+    if let Some(path) = app.icon_path.clone() {
+        if path.exists() {
+            return serve_icon_file(path).await;
+        }
+    }
+    // On-demand fallback: extract a real icon for apps the scan-time pass
+    // missed, so every visible row converges to a real icon instead of
+    // initials. Result lands in the on-disk PNG cache and the registry map.
+    #[cfg(target_os = "windows")]
+    {
+        let mut one = app.clone();
+        let extracted = tokio::task::spawn_blocking(move || {
+            let extractor = greek_windows::icon::IconExtractor::new();
+            extractor.extract_icons(std::slice::from_mut(&mut one));
+            if let Some(p) = one.icon_path.clone() {
+                let color = greek_windows::icon::IconExtractor::dominant_color(&p)
+                    .map(|(r, g, b)| format!("{r},{g},{b}"));
+                Some((p, color))
+            } else {
+                None
+            }
+        })
+        .await
+        .map_err(|e| format!("join {e}"))?;
+        if let Some((path, color)) = extracted {
+            if let Ok(mut map) = registry.apps.lock() {
+                if let Some(entry) = map.get_mut(&id) {
+                    entry.icon_path = Some(path.clone());
+                    if let Some(c) = color {
+                        entry.metadata.entry("icon_color".into()).or_insert(c);
+                    }
+                }
+            }
+            return serve_icon_file(path).await;
+        }
+    }
+    Ok(None)
 }
 
 fn resource_for_app(app: &InstalledApp, stats: &greek_common::SystemStats) -> Option<AppResourceDto> {
@@ -640,7 +884,7 @@ fn resource_for_app(app: &InstalledApp, stats: &greek_common::SystemStats) -> Op
 async fn get_app_resources(registry: State<'_, AppRegistry>) -> Result<HashMap<String, AppResourceDto>, String> {
     // Snapshot apps without holding lock during blocking collection
     let apps: Vec<InstalledApp> = {
-        let map = registry.0.lock().map_err(|e| format!("lock {e}"))?;
+        let map = registry.apps.lock().map_err(|e| format!("lock {e}"))?;
         map.values().cloned().collect()
     };
     if apps.is_empty() {
@@ -673,7 +917,7 @@ async fn get_app_resources(registry: State<'_, AppRegistry>) -> Result<HashMap<S
 async fn get_app_resource(registry: State<'_, AppRegistry>, id: String) -> Result<Option<AppResourceDto>, String> {
     validate_single_id(&id)?;
     let app = {
-        let map = registry.0.lock().map_err(|e| format!("lock {e}"))?;
+        let map = registry.apps.lock().map_err(|e| format!("lock {e}"))?;
         map.get(&id).cloned().ok_or_else(|| format!("App {id} not found"))?
     };
     let stats = tokio::task::spawn_blocking(|| {
@@ -693,11 +937,27 @@ async fn get_app_resource(registry: State<'_, AppRegistry>, id: String) -> Resul
 }
 
 #[tauri::command]
-async fn scan_videos() -> Result<Vec<VideoEntryDto>, String> {
+async fn scan_videos(
+    registry: State<'_, AppRegistry>,
+    refresh: Option<bool>,
+) -> Result<Vec<VideoEntryDto>, String> {
+    // 60s TTL: tab switches and re-opens must not re-walk the device.
+    // Manual Rescan passes refresh=true to bypass it.
+    if !refresh.unwrap_or(false) {
+        if let Ok(slot) = registry.videos.lock() {
+            if let Some(hit) = slot.as_ref() {
+                if hit.fresh() {
+                    if let Ok(dtos) = serde_json::from_str::<Vec<VideoEntryDto>>(&hit.payload) {
+                        return Ok(dtos);
+                    }
+                }
+            }
+        }
+    }
     use greek_core::video::VideoScanner;
     let scanner = VideoScanner::new();
     let entries = scanner.scan_all().await.map_err(|e| e.to_string())?;
-    Ok(entries.into_iter().map(|v| VideoEntryDto {
+    let dtos: Vec<VideoEntryDto> = entries.into_iter().map(|v| VideoEntryDto {
         id: v.id.to_string(),
         path: v.path.to_string_lossy().to_string(),
         name: v.name,
@@ -705,24 +965,51 @@ async fn scan_videos() -> Result<Vec<VideoEntryDto>, String> {
         size_bytes: v.size_bytes,
         size_display: v.size_display,
         drive: v.drive,
-    }).collect())
+    }).collect();
+    if let Ok(payload) = serde_json::to_string(&dtos) {
+        if let Ok(mut slot) = registry.videos.lock() {
+            *slot = Some(CachedScans { at: std::time::Instant::now(), payload });
+        }
+    }
+    Ok(dtos)
 }
 
 #[tauri::command]
-async fn delete_videos(paths: Vec<String>) -> Result<Vec<String>, String> {
+async fn delete_videos(registry: State<'_, AppRegistry>, paths: Vec<String>) -> Result<Vec<String>, String> {
     validate_paths(&paths)?;
     use greek_core::video::VideoScanner;
     let scanner = VideoScanner::new();
     let pbs: Vec<std::path::PathBuf> = paths.into_iter().map(std::path::PathBuf::from).collect();
-    scanner.delete_videos(pbs).await.map_err(|e| e.to_string())
+    let done = scanner.delete_videos(pbs).await.map_err(|e| e.to_string())?;
+    // Deletions change what a rescan shows.
+    if let Ok(mut slot) = registry.videos.lock() {
+        *slot = None;
+    }
+    Ok(done)
 }
 
 #[tauri::command]
-async fn scan_dev_modules() -> Result<Vec<DevModuleDto>, String> {
+async fn scan_dev_modules(
+    registry: State<'_, AppRegistry>,
+    refresh: Option<bool>,
+) -> Result<Vec<DevModuleDto>, String> {
+    // 60s TTL: tab switches and re-opens must not re-walk the device.
+    // Manual Rescan passes refresh=true to bypass it.
+    if !refresh.unwrap_or(false) {
+        if let Ok(slot) = registry.dev_modules.lock() {
+            if let Some(hit) = slot.as_ref() {
+                if hit.fresh() {
+                    if let Ok(dtos) = serde_json::from_str::<Vec<DevModuleDto>>(&hit.payload) {
+                        return Ok(dtos);
+                    }
+                }
+            }
+        }
+    }
     use greek_core::dev_modules::DevModulesScanner;
     let scanner = DevModulesScanner::new();
     let entries = scanner.scan_all().await.map_err(|e| e.to_string())?;
-    Ok(entries.into_iter().map(|m| DevModuleDto {
+    let dtos: Vec<DevModuleDto> = entries.into_iter().map(|m| DevModuleDto {
         id: m.id.to_string(),
         path: m.path.to_string_lossy().to_string(),
         name: m.name,
@@ -732,34 +1019,47 @@ async fn scan_dev_modules() -> Result<Vec<DevModuleDto>, String> {
         size_display: m.size_display,
         file_count: m.file_count,
         drive: m.drive,
-    }).collect())
+    }).collect();
+    if let Ok(payload) = serde_json::to_string(&dtos) {
+        if let Ok(mut slot) = registry.dev_modules.lock() {
+            *slot = Some(CachedScans { at: std::time::Instant::now(), payload });
+        }
+    }
+    Ok(dtos)
 }
 
 #[tauri::command]
-async fn clean_dev_modules(paths: Vec<String>) -> Result<Vec<String>, String> {
+async fn clean_dev_modules(registry: State<'_, AppRegistry>, paths: Vec<String>) -> Result<Vec<String>, String> {
     validate_paths(&paths)?;
     use greek_core::dev_modules::DevModulesScanner;
     let scanner = DevModulesScanner::new();
     let pbs: Vec<std::path::PathBuf> = paths.into_iter().map(std::path::PathBuf::from).collect();
-    scanner.delete_modules(pbs).await.map_err(|e| e.to_string())
+    let done = scanner.delete_modules(pbs).await.map_err(|e| e.to_string())?;
+    if let Ok(mut slot) = registry.dev_modules.lock() {
+        *slot = None;
+    }
+    Ok(done)
 }
 
 #[tauri::command]
-async fn clean_all_dev_modules() -> Result<Vec<String>, String> {
+async fn clean_all_dev_modules(registry: State<'_, AppRegistry>) -> Result<Vec<String>, String> {
     use greek_core::dev_modules::DevModulesScanner;
     let scanner = DevModulesScanner::new();
     let entries = scanner.scan_all().await.map_err(|e| e.to_string())?;
     let paths: Vec<std::path::PathBuf> = entries.into_iter().map(|e| e.path).collect();
-    scanner.delete_modules(paths).await.map_err(|e| e.to_string())
+    let done = scanner.delete_modules(paths).await.map_err(|e| e.to_string())?;
+    if let Ok(mut slot) = registry.dev_modules.lock() {
+        *slot = None;
+    }
+    Ok(done)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .manage(AppRegistry(Mutex::new(HashMap::new())))
-        .invoke_handler(tauri::generate_handler![scan_applications, get_app_details, get_system_stats, analyze_leftovers, uninstall_applications, get_app_icon, get_app_resources, get_app_resource, scan_videos, delete_videos, scan_dev_modules, clean_dev_modules, clean_all_dev_modules])
+        .manage(AppRegistry::new())
+        .invoke_handler(tauri::generate_handler![scan_applications, get_app_details, get_system_stats, analyze_leftovers, clean_leftover_artifacts, uninstall_applications, get_app_icon, get_app_resources, get_app_resource, scan_videos, delete_videos, scan_dev_modules, clean_dev_modules, clean_all_dev_modules])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

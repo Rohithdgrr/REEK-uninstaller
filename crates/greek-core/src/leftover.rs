@@ -272,44 +272,48 @@ impl LeftoverAnalyzer for FileSystemLeftoverAnalyzer {
 
         // If user configured no explicit roots, fall back to comprehensive scan (all drives + AppData)
         let scan_roots: Vec<PathBuf> = if self.scan_directories.is_empty() {
-            build_comprehensive_scan_roots()
+            crate::utils::dedupe_roots(build_comprehensive_scan_roots())
         } else {
-            self.scan_directories.clone()
+            crate::utils::dedupe_roots(self.scan_directories.clone())
         };
 
-        // Offload CPU-bound walk to blocking pool; collect per-root to avoid lock contention
+        // Offload CPU-bound walk to blocking pool; walk roots in parallel
+        // with rayon and merge at the end.
         let tokens_clone = tokens.clone();
         let publisher_clone = publisher_lower.clone();
         let roots_clone = scan_roots.clone();
         let found_per_root = tokio::task::spawn_blocking(move || {
-            let mut all: Vec<Vec<LeftoverArtifact>> = Vec::new();
-            for dir in &roots_clone {
-                if !dir.exists() { continue; }
-                // Windows folder is huge — cap depth to 2 (e.g. C:\Windows\Cursor -> depth 2)
-                let max_depth = if dir.to_string_lossy().to_lowercase().ends_with("\\windows") || dir.to_string_lossy().to_lowercase().ends_with("/windows") { 2 } else { 4 };
-                let mut local = Vec::new();
-                for entry in WalkDir::new(dir).max_depth(max_depth).follow_links(false).into_iter().filter_map(|e| e.ok()) {
-                    let path = entry.path();
-                    // Skip reparse points / junctions already handled by !follow_links, but still skip symlink metadata
-                    if std::fs::symlink_metadata(path).map(|m| m.file_type().is_symlink()).unwrap_or(false) {
-                        continue;
+            use rayon::prelude::*;
+            roots_clone
+                .into_par_iter()
+                .map(|dir| {
+                    if !dir.exists() { return Vec::new(); }
+                    // Windows folder is huge — cap depth to 2 (e.g. C:\Windows\Cursor -> depth 2)
+                    let lower = dir.to_string_lossy().to_lowercase();
+                    let max_depth = if lower.ends_with("\\windows") || lower.ends_with("/windows") { 2 } else { 4 };
+                    let mut local = Vec::new();
+                    for entry in WalkDir::new(&dir).max_depth(max_depth).follow_links(false).into_iter().filter_map(|e| e.ok()) {
+                        // Reparse points: entry file_type is free, no extra stat.
+                        if entry.file_type().is_symlink() {
+                            continue;
+                        }
+                        let path = entry.path();
+                        // Never flag documents/images as leftovers (user request: exclude .pdf, .doc, .ppt, .xlsx, .jpg, .png, etc.)
+                        if path.is_file() && is_excluded_doc_image(path) {
+                            continue;
+                        }
+                        let path_lower = path.to_string_lossy().to_lowercase();
+                        if path_matches_tokens(&path_lower, &tokens_clone, &publisher_clone) {
+                            let art_type = if path.is_dir() { ArtifactType::Directory } else { ArtifactType::File };
+                            let mut art = LeftoverArtifact::new(art_type, path.to_path_buf());
+                            art.description = format!("Potential leftover for {}", tokens_clone.join(", "));
+                            art.size_bytes = calc_artifact_size(path);
+                            local.push(art);
+                        }
                     }
-                    // Never flag documents/images as leftovers (user request: exclude .pdf, .doc, .ppt, .xlsx, .jpg, .png, etc.)
-                    if path.is_file() && is_excluded_doc_image(path) {
-                        continue;
-                    }
-                    let path_lower = path.to_string_lossy().to_lowercase();
-                    if path_matches_tokens(&path_lower, &tokens_clone, &publisher_clone) {
-                        let art_type = if path.is_dir() { ArtifactType::Directory } else { ArtifactType::File };
-                        let mut art = LeftoverArtifact::new(art_type, path.to_path_buf());
-                        art.description = format!("Potential leftover for {}", tokens_clone.join(", "));
-                        art.size_bytes = calc_artifact_size(path);
-                        local.push(art);
-                    }
-                }
-                all.push(local);
-            }
-            all
+                    local
+                })
+                .collect::<Vec<_>>()
         }).await.map_err(|e| greek_common::GreekError::AnalysisError(format!("spawn_blocking join: {}", e)))?;
 
         for mut v in found_per_root { artifacts.extend(v.drain(..)); }

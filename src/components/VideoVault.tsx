@@ -9,10 +9,10 @@ export function VideoVault({ onDeleted }: { onDeleted?: (count: number) => void 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
 
-  const load = async () => {
+  const load = async (refresh = false) => {
     setLoading(true);
     try {
-      const v = await scanVideos();
+      const v = await scanVideos(refresh);
       setVideos(v);
     } catch (e) {
       console.error(e);
@@ -81,7 +81,7 @@ export function VideoVault({ onDeleted }: { onDeleted?: (count: number) => void 
             <p className="text-[11px] text-[#6B6661]">{loading ? "Scanning whole device…" : `${filtered.length} videos • ${totalDisplay} total`}</p>
           </div>
         </div>
-        <button onClick={load} disabled={loading} className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-[#141414] px-3 py-1.5 text-xs text-[#A8A39E] hover:text-white disabled:opacity-50">
+        <button onClick={() => load(true)} disabled={loading} className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-[#141414] px-3 py-1.5 text-xs text-[#A8A39E] hover:text-white disabled:opacity-50">
           {loading ? <Loader2 size={12} className="animate-spin"/> : <Search size={12}/>} {loading ? "Scanning…" : "Rescan"}
         </button>
       </div>

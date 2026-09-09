@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
 import { X, FolderOpen, Trash2, Flame, Search, ShieldAlert, Cpu, MemoryStick, Activity, Zap, HardDrive, Folder, File, AlertTriangle, CheckCircle2, Loader2, Database, Layers, Clock3, Link2, Trash, Package, FileWarning, Copy } from "lucide-react";
-import { getAppDetails, analyzeLeftovers, type AppDetails, type LeftoverDto, uninstallApplications, getAppIcon, getAppResource, type AppResourceDto } from "../lib/tauri";
+import { getAppDetails, analyzeLeftovers, cleanLeftoverArtifacts, type AppDetails, type LeftoverDto, uninstallApplications, getAppIcon, getAppResource, type AppResourceDto } from "../lib/tauri";
 
 function categorizePath(p: string): { label: string; drive: string } {
   const lower = p.toLowerCase();
@@ -75,11 +75,13 @@ export function AppDetailsDrawer({
   }, [id]);
 
   useEffect(() => {
-    if (!d?.icon_path || !id) return;
+    // Always fetch the real high-quality icon — backend extracts on-demand
+    // even when scan-time extraction missed. Never gate on icon_path.
+    if (!d || !id) return;
     let cancelled = false;
     getAppIcon(id).then(v => { if (!cancelled && v) setIconB64(v); }).catch(()=>{});
     return () => { cancelled = true; };
-  }, [d?.icon_path, id]);
+  }, [d, id]);
 
   useEffect(() => {
     if (!id) return;
@@ -95,15 +97,56 @@ export function AppDetailsDrawer({
     return () => { alive = false; clearInterval(iv); };
   }, [id]);
 
-  const runScan = async () => {
-    if (!id) return;
+  const runScan = async (refresh = false): Promise<LeftoverDto[] | null> => {
+    if (!id) return null;
     setLeftLoading(true); setErr(null);
     try {
-      const l = await analyzeLeftovers(id);
+      const l = await analyzeLeftovers(id, refresh);
       setLeftovers(l);
       if (l.length===0) setErr("No leftovers found — clean. Scanned whole device: all drives (Program Files, Users, AppData, ProgramData, Windows), registry (HKLM/HKCU Software, Run, Services, Uninstall), temp/junk, services, scheduled tasks, shortcuts, modules.");
-    } catch(e){ setErr(String(e)); }
+      return l;
+    } catch(e){ setErr(String(e)); return null; }
     finally{ setLeftLoading(false); }
+  };
+
+  // Uninstall, then delete the scanned leftovers, then rescan to prove
+  // what remains. Returns true when nothing remains.
+  const runUninstallAndClean = async (): Promise<boolean> => {
+    if (!d || !id) return false;
+    setBusy("uninstall");
+    setErr(null);
+    try {
+      await uninstallApplications({ ids: [d.id], force: true });
+      const items = (leftovers ?? []).map((l) => ({
+        path: l.path,
+        artifact_type: l.artifact_type,
+        safety: l.safety,
+      }));
+      let cleaned = 0;
+      let skipped: string[] = [];
+      if (items.length > 0) {
+        const results = await cleanLeftoverArtifacts(items, true);
+        cleaned = results.filter((r) => r.deleted).length;
+        skipped = results.filter((r) => !r.deleted).map((r) => `${r.path} (${r.reason})`);
+      }
+      const fresh = await analyzeLeftovers(id, true);
+      setLeftovers(fresh);
+      if (fresh.length === 0) {
+        return true;
+      }
+      setErr(
+        `Cleaned ${cleaned}/${items.length} leftover items; ${fresh.length} remain` +
+        (skipped.length ? ` — skipped: ${skipped.slice(0, 3).join("; ")}${skipped.length > 3 ? ` (+${skipped.length - 3} more)` : ""}` : "") +
+        ". Protected and system-integration items need manual removal."
+      );
+      return false;
+    } catch (e) {
+      setErr(String(e));
+      return false;
+    } finally {
+      setBusy(null);
+      setShowDeleteConfirm(false);
+    }
   };
 
   useEffect(() => {
@@ -194,7 +237,7 @@ export function AppDetailsDrawer({
             <>
               <div className="flex gap-5 items-start">
                 {iconB64 ? (
-                  <img src={`data:image/png;base64,${iconB64}`} alt="" className="w-20 h-20 md:w-24 md:h-24 rounded-[16px] object-contain border border-[rgba(225,29,72,0.12)] bg-black shrink-0" style={{ imageRendering: "auto" } as React.CSSProperties} />
+                  <img src={`data:image/png;base64,${iconB64}`} alt={`${d.name} icon`} draggable={false} decoding="async" className="w-20 h-20 md:w-24 md:h-24 rounded-[16px] object-contain p-1 border border-[rgba(225,29,72,0.12)] bg-black shrink-0" style={{ imageRendering: "auto" } as React.CSSProperties} />
                 ) : d.icon_color ? (
                   <div className="w-20 h-20 md:w-24 md:h-24 rounded-[16px] flex items-center justify-center font-bold text-white text-2xl border border-[rgba(225,29,72,0.12)] shrink-0" style={{ backgroundColor: `rgb(${d.icon_color})` }}>{d.name.slice(0,2).toUpperCase()}</div>
                 ) : (
@@ -266,7 +309,7 @@ export function AppDetailsDrawer({
                       {leftLoading ? "Scanning…" : leftovers ? `• ${leftovers.length} items • ${totalSizeDisplay ?? ""}` : "• auto-scanning"}
                     </span>
                   </div>
-                  <button disabled={leftLoading} onClick={runScan} className="inline-flex items-center gap-1.5 rounded-full border border-[rgba(225,29,72,0.18)] bg-black px-3 py-1.5 text-[11px] font-medium text-[#F5F0EB] hover:bg-[#1A1A1A] disabled:opacity-50">
+                  <button disabled={leftLoading} onClick={() => runScan(true)} className="inline-flex items-center gap-1.5 rounded-full border border-[rgba(225,29,72,0.18)] bg-black px-3 py-1.5 text-[11px] font-medium text-[#F5F0EB] hover:bg-[#1A1A1A] disabled:opacity-50">
                     {leftLoading ? <Loader2 size={12} className="animate-spin"/> : <Search size={12}/>} {leftLoading ? "Scanning…" : "Rescan whole device"}
                   </button>
                 </div>
@@ -357,17 +400,17 @@ export function AppDetailsDrawer({
               {showDeleteConfirm && leftovers && leftovers.length>0 && (
                 <div className="rounded-[14px] border border-[rgba(255,193,7,0.25)] bg-[rgba(255,193,7,0.06)] p-4">
                   <p className="text-xs font-semibold text-[#FFC107] flex items-center gap-1.5"><AlertTriangle size={14}/> Confirm delete</p>
-                  <p className="text-xs text-[#A8A39E] mt-1">The app will be uninstalled and <span className="text-[#F5F0EB] font-medium">{leftovers.length} leftover item{leftovers.length!==1?"s":""} ({categories.map(([c,n])=>`${c}:${n}`).join(" • ")})</span> will be removed (where safe). Protected Windows/registry paths are blocked.</p>
+                  <p className="text-xs text-[#A8A39E] mt-1">The app will be uninstalled and <span className="text-[#F5F0EB] font-medium">{leftovers.length} leftover item{leftovers.length!==1?"s":""} ({categories.map(([c,n])=>`${c}:${n}`).join(" • ")})</span> will be deleted, then rescanned to prove what remains. Protected paths are always blocked; shell extensions and drivers need manual removal.</p>
                   <div className="mt-3 flex gap-2">
-                    <button onClick={()=>setShowDeleteConfirm(false)} className="rounded-full bg-black border border-[rgba(255,255,255,0.08)] px-4 py-2 text-xs text-[#A8A39E]">Cancel</button>
+                    <button disabled={!!busy} onClick={()=>setShowDeleteConfirm(false)} className="rounded-full bg-black border border-[rgba(255,255,255,0.08)] px-4 py-2 text-xs text-[#A8A39E] disabled:opacity-50">Cancel</button>
                     <button
+                      disabled={!!busy}
                       onClick={async ()=>{
-                        if (!d) return;
-                        setBusy("uninstall");
-                        try { await uninstallApplications({ ids: [d.id], force: true }); onUninstalled(); onClose(); } catch(e){ setErr(String(e)); } finally{ setBusy(null); setShowDeleteConfirm(false); }
+                        const clean = await runUninstallAndClean();
+                        if (clean) { onUninstalled(); onClose(); }
                       }}
-                      className="rounded-full bg-[#E11D48] px-4 py-2 text-xs font-semibold text-white"
-                    >Confirm & Uninstall</button>
+                      className="rounded-full bg-[#E11D48] px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                    >{busy==="uninstall" ? "Working…" : "Confirm & Uninstall"}</button>
                   </div>
                 </div>
               )}
@@ -378,9 +421,12 @@ export function AppDetailsDrawer({
         {d && (
           <div className="px-6 md:px-8 py-4 border-t border-[rgba(225,29,72,0.08)] bg-[#0A0A0A] flex flex-col sm:flex-row gap-3 shrink-0">
             <button
-              disabled={!!busy}
+              disabled={!!busy || leftLoading}
               onClick={async () => {
-                if (!leftovers && !leftLoading) { await runScan(); }
+                let current = leftovers;
+                if (!current && !leftLoading) { current = await runScan(); }
+                // Only open the confirm step on a completed scan.
+                if (!current) return;
                 setShowDeleteConfirm(true);
                 setTimeout(()=>{ document.querySelector('[role="dialog"]')?.scrollTo({ top: 9999, behavior: 'smooth'}); }, 100);
               }}
@@ -396,7 +442,7 @@ export function AppDetailsDrawer({
             ><Flame size={16}/>{busy==="force" ? "Force removing…" : "Force Remove"}</button>
             <button
               disabled={!!busy || leftLoading}
-              onClick={runScan}
+              onClick={() => runScan(true)}
               className="hidden sm:inline-flex items-center justify-center gap-2 rounded-full border border-[rgba(225,29,72,0.12)] bg-[#1A1A1A] px-5 py-3 text-[13px] font-medium text-[#F5F0EB] hover:bg-black hover:border-[rgba(225,29,72,0.2)] transition"
             ><Search size={16}/>{leftLoading ? "Scanning…" : "Rescan"}</button>
           </div>

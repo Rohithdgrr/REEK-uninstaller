@@ -119,23 +119,35 @@ impl DevModulesScanner {
     }
 
     pub async fn scan_all(&self) -> Result<Vec<DevModuleEntry>> {
-        let roots = Self::build_roots();
+        let roots = crate::utils::dedupe_roots(Self::build_roots());
         let max_depth = self.max_depth;
         let entries = tokio::task::spawn_blocking(move || {
-            let mut all: Vec<DevModuleEntry> = Vec::new();
-            let mut seen = std::collections::HashSet::new();
-            for root in roots {
-                walk_scan(&root, max_depth, &mut all, &mut seen);
-                if all.len() > 2000 { break; }
-            }
-            // Dedup and sort by size desc
-            let mut dedup: Vec<DevModuleEntry> = Vec::new();
+            use rayon::prelude::*;
+            // Phase 1: find candidate folders in parallel (no sizing yet —
+            // sizing is the expensive part and runs in phase 2).
+            let mut all: Vec<DevModuleEntry> = roots
+                .into_par_iter()
+                .map(|root| walk_scan(&root, max_depth))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .flatten()
+                .collect();
+            if all.len() > 2000 { all.truncate(2000); }
+            // Dedup by path.
             let mut seen_path = std::collections::HashSet::new();
+            let mut dedup: Vec<DevModuleEntry> = Vec::new();
             for e in all {
                 let k = e.path.to_string_lossy().to_lowercase();
                 if seen_path.insert(k) { dedup.push(e); }
             }
-            dedup.sort_by(|a,b| b.size_bytes.cmp(&a.size_bytes));
+            // Phase 2: size the matches in parallel.
+            dedup.par_iter_mut().for_each(|e| {
+                let (size, count) = calc_dir_stats(&e.path);
+                e.size_bytes = size;
+                e.size_display = humansize::format_size(size, humansize::BINARY);
+                e.file_count = count;
+            });
+            dedup.sort_by_key(|a| std::cmp::Reverse(a.size_bytes));
             if dedup.len() > 1000 { dedup.truncate(1000); }
             dedup
         }).await.map_err(|e| greek_common::GreekError::ScanError(format!("dev scan join: {}", e)))?;
@@ -180,27 +192,28 @@ impl DevModulesScanner {
     }
 }
 
-fn walk_scan(root: &Path, max_depth: usize, out: &mut Vec<DevModuleEntry>, seen: &mut std::collections::HashSet<String>) {
+fn walk_scan(root: &Path, max_depth: usize) -> Vec<DevModuleEntry> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     let mut stack = vec![(root.to_path_buf(), 0)];
     while let Some((dir, depth)) = stack.pop() {
         if depth > max_depth { continue; }
         if should_skip_dir(&dir) { continue; }
         let entries = match std::fs::read_dir(&dir) { Ok(e) => e, Err(_) => continue };
         for ent in entries.filter_map(|e| e.ok()) {
+            // Reuse the entry file type: skips a stat call per child.
+            if !ent.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
             let path = ent.path();
-            let is_dir = path.is_dir();
-            if !is_dir { continue; }
             let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
             // Check if this folder matches any dev pattern
             for pat in PATTERNS {
                 let matches = if pat.exact { fname == pat.folder } else { fname.contains(pat.folder) };
                 if matches {
                     let lower = path.to_string_lossy().to_lowercase();
-                    if seen.contains(&lower) { continue; }
-                    seen.insert(lower.clone());
-                    // Don't descend into this matched dir (avoid scanning inside node_modules deeply for nested node_modules)
-                    // But still calculate size
-                    let (size, count) = calc_dir_stats(&path);
+                    if !seen.insert(lower) { break; }
+                    // Size is computed later in a parallel pass; don't
+                    // descend into the match (avoids nested walks inside
+                    // node_modules/target/venv trees).
                     let drive = path.to_string_lossy().chars().take(2).collect::<String>().to_uppercase().replace(":", "");
                     out.push(DevModuleEntry {
                         id: Uuid::new_v4(),
@@ -208,36 +221,26 @@ fn walk_scan(root: &Path, max_depth: usize, out: &mut Vec<DevModuleEntry>, seen:
                         name: path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string(),
                         kind: pat.kind,
                         language: pat.kind.language().to_string(),
-                        size_bytes: size,
-                        size_display: humansize::format_size(size, humansize::BINARY),
-                        file_count: count,
+                        size_bytes: 0,
+                        size_display: String::new(),
+                        file_count: 0,
                         drive,
                     });
-                    // Don't push children if it's node_modules (too many)
-                    if pat.folder == "node_modules" || pat.folder == "target" || pat.folder == ".venv" {
-                        // skip descending
-                    } else {
-                        // For other small caches, still don't descend deeply
-                    }
                     break;
                 }
             }
-            // Continue walk if not matched or if we want to find nested modules (e.g. monorepo)
-            // Push to stack to scan deeper
+            // Descend only into non-matching dirs (monorepos still found;
+            // matched trees like node_modules/target are never re-entered).
             if depth + 1 <= max_depth {
-                // Avoid descending into huge node_modules/target we already reported — skip
                 let fname2 = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
                 let is_matched = PATTERNS.iter().any(|p| if p.exact { fname2 == p.folder } else { fname2.contains(p.folder) });
                 if !is_matched {
                     stack.push((path, depth + 1));
-                } else {
-                    // For target/node_modules, still allow finding nested modules inside parent projects? e.g. project/target
-                    // We already reported this target, but there could be other modules at deeper levels beyond this folder's parent?
-                    // No need to descend inside target/node_modules
                 }
             }
         }
     }
+    out
 }
 
 fn calc_dir_stats(path: &Path) -> (u64, usize) {
