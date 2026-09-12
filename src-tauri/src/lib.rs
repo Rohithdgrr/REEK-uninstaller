@@ -23,6 +23,10 @@ struct AppRegistry {
     videos: Mutex<Option<CachedScans>>,
     dev_modules: Mutex<Option<CachedScans>>,
     leftovers: Mutex<HashMap<String, CachedScans>>,
+    /// Recently-failed on-demand icon extractions (id -> failure time).
+    /// Stops the UI from retrying hopeless extractions — and their
+    /// powershell.exe spawns — on every render.
+    icon_miss: Mutex<HashMap<String, std::time::Instant>>,
 }
 
 impl AppRegistry {
@@ -32,6 +36,7 @@ impl AppRegistry {
             videos: Mutex::new(None),
             dev_modules: Mutex::new(None),
             leftovers: Mutex::new(HashMap::new()),
+            icon_miss: Mutex::new(HashMap::new()),
         }
     }
 
@@ -64,11 +69,21 @@ pub struct AppEntry {
     #[serde(default = "default_true")]
     pub can_uninstall: bool,
     /// True when a real extracted icon PNG is already cached for this app.
-    /// Rows with false still attempt on-demand extraction via get_app_icon,
+    /// Rows with false still attempt on-demand extraction via get_app_icons,
     /// so every visible row converges to a real high-quality icon instead
     /// of initials.
     #[serde(default)]
     pub has_icon: bool,
+}
+
+/// One row of a batched icon response. `icon` is a base64 PNG when
+/// extraction succeeded; otherwise `error` carries the human-readable
+/// reason (no source, timeout, read failure) instead of a silent null.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IconResultDto {
+    pub id: String,
+    pub icon: Option<String>,
+    pub error: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -785,6 +800,212 @@ async fn get_app_icon(registry: State<'_, AppRegistry>, id: String) -> Result<Op
     Ok(None)
 }
 
+/// Batched icon fetch: one invoke serves a whole visible list.
+///
+/// Fast path reads already-extracted PNGs off disk. All remaining misses
+/// go through a SINGLE `extract_icons` call (one set of batched
+/// PowerShell invocations, not one powershell.exe per row) wrapped in a
+/// 60s timeout. Failures are recorded in the negative `icon_miss` cache
+/// (5min TTL) and returned with a reason in `error` instead of a silent
+/// null, so the UI can stop retrying hopeless rows.
+#[tauri::command]
+async fn get_app_icons(
+    registry: State<'_, AppRegistry>,
+    ids: Vec<String>,
+) -> Result<Vec<IconResultDto>, String> {
+    const MAX_ICON_IDS: usize = 100;
+    const MISS_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+    const BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+    if ids.len() > MAX_ICON_IDS {
+        return Err(format!("Too many icons requested (max {MAX_ICON_IDS})"));
+    }
+    // Dedupe (preserve order) + validate.
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut uniq: Vec<String> = Vec::with_capacity(ids.len());
+    for id in ids {
+        validate_single_id(&id)?;
+        if seen_ids.insert(id.clone()) {
+            uniq.push(id);
+        }
+    }
+    if uniq.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Snapshot the requested apps + prune stale negative-cache entries.
+    let apps: HashMap<String, InstalledApp> = {
+        let map = registry.apps.lock().map_err(|e| format!("lock {e}"))?;
+        uniq.iter()
+            .filter_map(|id| map.get(id).cloned().map(|a| (id.clone(), a)))
+            .collect()
+    };
+    if let Ok(mut miss) = registry.icon_miss.lock() {
+        miss.retain(|_, at| at.elapsed() < MISS_TTL);
+        if miss.len() > 2000 {
+            miss.clear();
+        }
+    }
+
+    let mut out: Vec<IconResultDto> = Vec::with_capacity(uniq.len());
+    let mut pending: Vec<InstalledApp> = Vec::new();
+    let mut pending_ids: Vec<String> = Vec::new();
+
+    for id in &uniq {
+        let Some(app) = apps.get(id) else {
+            out.push(IconResultDto {
+                id: id.clone(),
+                icon: None,
+                error: Some("unknown app id (stale — rescan)".into()),
+            });
+            continue;
+        };
+        // Negative cache: recently failed — don't respawn PowerShell.
+        let miss_fresh = registry
+            .icon_miss
+            .lock()
+            .map(|m| m.get(id).is_some_and(|at| at.elapsed() < MISS_TTL))
+            .unwrap_or(false);
+        if miss_fresh {
+            out.push(IconResultDto {
+                id: id.clone(),
+                icon: None,
+                error: Some("no icon source (recently failed)".into()),
+            });
+            continue;
+        }
+        // Fast path: previously extracted PNG on disk.
+        if let Some(path) = app.icon_path.clone() {
+            if path.exists() {
+                match serve_icon_file(path).await {
+                    Ok(Some(b64)) => {
+                        out.push(IconResultDto { id: id.clone(), icon: Some(b64), error: None });
+                        continue;
+                    }
+                    Ok(None) => {} // corrupt/missing — fall through to on-demand
+                    Err(e) => {
+                        out.push(IconResultDto { id: id.clone(), icon: None, error: Some(e) });
+                        continue;
+                    }
+                }
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            out.push(IconResultDto {
+                id: id.clone(),
+                icon: None,
+                error: Some("icons unavailable on this platform".into()),
+            });
+            continue;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            pending_ids.push(id.clone());
+            pending.push(app.clone());
+        }
+    }
+
+    // On-demand: ONE extraction pass for all misses (batched PowerShell
+    // inside extract_icons), guarded by a timeout.
+    #[cfg(target_os = "windows")]
+    if !pending.is_empty() {
+        let extract = tokio::task::spawn_blocking(move || {
+            let extractor = greek_windows::icon::IconExtractor::new();
+            let mut batch = pending;
+            extractor.extract_icons(&mut batch);
+            batch
+                .into_iter()
+                .map(|a| {
+                    let color = a.icon_path.as_ref().and_then(|p| {
+                        greek_windows::icon::IconExtractor::dominant_color(p)
+                            .map(|(r, g, b)| format!("{r},{g},{b}"))
+                    });
+                    (a.id.to_string(), a.icon_path, color)
+                })
+                .collect::<Vec<_>>()
+        });
+        let done = match tokio::time::timeout(BATCH_TIMEOUT, extract).await {
+            Ok(Ok(rows)) => Some(rows),
+            Ok(Err(e)) => {
+                for id in &pending_ids {
+                    out.push(IconResultDto {
+                        id: id.clone(),
+                        icon: None,
+                        error: Some(format!("extraction join: {e}")),
+                    });
+                }
+                None
+            }
+            Err(_) => {
+                for id in &pending_ids {
+                    out.push(IconResultDto {
+                        id: id.clone(),
+                        icon: None,
+                        error: Some(format!(
+                            "extraction timed out after {}s",
+                            BATCH_TIMEOUT.as_secs()
+                        )),
+                    });
+                }
+                None
+            }
+        };
+        if let Some(rows) = done {
+            for ((row_id, icon_path, color), req_id) in rows.into_iter().zip(pending_ids.iter()) {
+                let Some(path) = icon_path else {
+                    if let Ok(mut miss) = registry.icon_miss.lock() {
+                        miss.insert(req_id.clone(), std::time::Instant::now());
+                    }
+                    out.push(IconResultDto {
+                        id: req_id.clone(),
+                        icon: None,
+                        error: Some("no icon source found".into()),
+                    });
+                    continue;
+                };
+                debug_assert_eq!(&row_id, req_id);
+                if let Ok(mut map) = registry.apps.lock() {
+                    if let Some(entry) = map.get_mut(req_id) {
+                        entry.icon_path = Some(path.clone());
+                        if let Some(c) = color {
+                            entry.metadata.entry("icon_color".into()).or_insert(c);
+                        }
+                    }
+                }
+                match serve_icon_file(path).await {
+                    Ok(Some(b64)) => out.push(IconResultDto {
+                        id: req_id.clone(),
+                        icon: Some(b64),
+                        error: None,
+                    }),
+                    Ok(None) => {
+                        if let Ok(mut miss) = registry.icon_miss.lock() {
+                            miss.insert(req_id.clone(), std::time::Instant::now());
+                        }
+                        out.push(IconResultDto {
+                            id: req_id.clone(),
+                            icon: None,
+                            error: Some("extracted icon unreadable".into()),
+                        });
+                    }
+                    Err(e) => out.push(IconResultDto {
+                        id: req_id.clone(),
+                        icon: None,
+                        error: Some(e),
+                    }),
+                }
+            }
+        }
+    }
+
+    // Preserve request order.
+    let order: HashMap<&str, usize> =
+        uniq.iter().enumerate().map(|(i, id)| (id.as_str(), i)).collect();
+    out.sort_by_key(|r| order.get(r.id.as_str()).copied().unwrap_or(usize::MAX));
+    Ok(out)
+}
+
 fn resource_for_app(app: &InstalledApp, stats: &greek_common::SystemStats) -> Option<AppResourceDto> {
     let mut total_cpu = 0f32;
     let mut total_mem = 0u64;
@@ -1059,7 +1280,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppRegistry::new())
-        .invoke_handler(tauri::generate_handler![scan_applications, get_app_details, get_system_stats, analyze_leftovers, clean_leftover_artifacts, uninstall_applications, get_app_icon, get_app_resources, get_app_resource, scan_videos, delete_videos, scan_dev_modules, clean_dev_modules, clean_all_dev_modules])
+        .invoke_handler(tauri::generate_handler![scan_applications, get_app_details, get_system_stats, analyze_leftovers, clean_leftover_artifacts, uninstall_applications, get_app_icon, get_app_icons, get_app_resources, get_app_resource, scan_videos, delete_videos, scan_dev_modules, clean_dev_modules, clean_all_dev_modules])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

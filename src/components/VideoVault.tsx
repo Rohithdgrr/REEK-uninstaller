@@ -8,14 +8,19 @@ export function VideoVault({ onDeleted }: { onDeleted?: (count: number) => void 
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const load = async (refresh = false) => {
     setLoading(true);
+    setError(null);
     try {
       const v = await scanVideos(refresh);
       setVideos(v);
     } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
       console.error(e);
+      setError(msg);
       setVideos([]);
     } finally { setLoading(false); }
   };
@@ -60,14 +65,26 @@ export function VideoVault({ onDeleted }: { onDeleted?: (count: number) => void 
   const handleDelete = async () => {
     if (selected.size === 0) return;
     setDeleting(true);
+    setDeleteError(null);
     try {
       const paths = Array.from(selected);
-      await deleteVideos(paths);
-      const remaining = (videos ?? []).filter(v => !selected.has(v.path));
+      const done = await deleteVideos(paths);
+      const doneSet = new Set(done);
+      // Only drop rows the backend confirms deleted; keep the rest selected
+      // so the user can retry (e.g. file locked).
+      const remaining = (videos ?? []).filter(v => !doneSet.has(v.path));
       setVideos(remaining);
-      setSelected(new Set());
-      onDeleted?.(paths.length);
-    } catch (e) { console.error(e); }
+      const failed = paths.filter(p => !doneSet.has(p));
+      setSelected(new Set(failed));
+      if (failed.length > 0) {
+        setDeleteError(`${failed.length} video${failed.length > 1 ? "s" : ""} could not be moved to the recycle bin (file may be open or locked).`);
+      }
+      if (done.length > 0) onDeleted?.(done.length);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(e);
+      setDeleteError(`Delete failed: ${msg}`);
+    }
     finally { setDeleting(false); }
   };
 
@@ -98,6 +115,13 @@ export function VideoVault({ onDeleted }: { onDeleted?: (count: number) => void 
         )}
       </div>
 
+      {deleteError && (
+        <div className="rounded-xl border border-[rgba(225,29,72,0.25)] bg-[rgba(225,29,72,0.08)] px-4 py-3 text-sm text-[#FF2047] flex items-center justify-between gap-3">
+          <span>{deleteError}</span>
+          <button onClick={() => setDeleteError(null)} className="shrink-0 rounded-full border border-white/10 px-3 py-1 text-xs text-white">Dismiss</button>
+        </div>
+      )}
+
       {selected.size>0 && (
         <div className="flex items-center justify-between bg-[rgba(225,29,72,0.08)] border border-[rgba(225,29,72,0.18)] rounded-xl px-4 py-3">
           <span className="text-sm text-white font-medium">{selected.size} selected • {Array.from(selected).length} videos will be moved to recycle bin</span>
@@ -107,11 +131,18 @@ export function VideoVault({ onDeleted }: { onDeleted?: (count: number) => void 
         </div>
       )}
 
+      {error && (
+        <div className="rounded-xl border border-[rgba(225,29,72,0.25)] bg-[rgba(225,29,72,0.08)] px-4 py-3 text-sm text-[#FF2047] flex items-center justify-between gap-3">
+          <span>Video scan failed: {error}</span>
+          <button onClick={() => load(true)} className="shrink-0 rounded-full bg-[#E11D48] px-3 py-1 text-xs font-semibold text-white">Retry</button>
+        </div>
+      )}
+
       {loading ? (
         <div className="py-16 flex flex-col items-center gap-3 text-[#6B6661]">
           <Loader2 size={24} className="animate-spin text-[#E11D48]"/>
           <p className="text-sm">Scanning every drive for .mp4 .mkv .avi …</p>
-          <p className="text-xs">This scans Videos, Downloads, Desktop and all drives (depth 4) — accurate sizes.</p>
+          <p className="text-xs">This scans Videos, Downloads, Desktop and all drives (depth 8) — accurate sizes.</p>
         </div>
       ) : filtered.length===0 ? (
         <div className="py-16 text-center border border-dashed border-white/10 rounded-2xl bg-[#0A0A0A]">

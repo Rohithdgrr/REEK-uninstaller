@@ -211,7 +211,11 @@ pub fn move_to_recycle_bin(path: &Path) -> Result<()> {
             "Recycle bin not available, deleting directly: {}",
             path.display()
         );
-        delete_directory(path)
+        // Videos are files — try file delete first, then directory.
+        match delete_file(path) {
+            Ok(()) => Ok(()),
+            Err(_) => delete_directory(path),
+        }
     }
 }
 
@@ -358,7 +362,10 @@ pub fn dedupe_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut norm: Vec<(String, PathBuf)> = roots
         .into_iter()
         .map(|p| {
-            let mut s = p.to_string_lossy().to_lowercase().replace(['/', '\\'], std::path::MAIN_SEPARATOR_STR);
+            let mut s = p
+                .to_string_lossy()
+                .to_lowercase()
+                .replace(['/', '\\'], std::path::MAIN_SEPARATOR_STR);
             while s.ends_with(std::path::MAIN_SEPARATOR) && s.len() > 3 {
                 s.pop();
             }
@@ -370,7 +377,9 @@ pub fn dedupe_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut kept: Vec<(String, PathBuf)> = Vec::new();
     for (s, p) in norm {
         let covered = kept.iter().any(|(ks, _)| {
-            s.len() > ks.len() && s.starts_with(ks.as_str()) && s.as_bytes().get(ks.len()) == Some(&(MAIN_SEPARATOR as u8))
+            s.len() > ks.len()
+                && s.starts_with(ks.as_str())
+                && s.as_bytes().get(ks.len()) == Some(&(MAIN_SEPARATOR as u8))
         });
         if !covered {
             kept.push((s, p));
@@ -440,7 +449,10 @@ mod tests {
         ];
         let out = dedupe_roots(roots);
         assert_eq!(out.len(), 2);
-        let flat: Vec<String> = out.iter().map(|p| p.to_string_lossy().to_lowercase()).collect();
+        let flat: Vec<String> = out
+            .iter()
+            .map(|p| p.to_string_lossy().to_lowercase())
+            .collect();
         assert!(flat.iter().any(|s| s == "c:\\users"));
         assert!(flat.iter().any(|s| s == "d:\\projects"));
     }

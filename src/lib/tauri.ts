@@ -154,14 +154,63 @@ export async function uninstallApplications(payload: UninstallPayload): Promise<
   return invoke<UninstallResultDto[]>("uninstall_applications", { payload });
 }
 
-const iconCache = new Map<string, string | null>();
+export type IconResultDto = {
+  id: string;
+  icon?: string | null;
+  error?: string | null;
+};
+
+// Icon cache keyed by app id. Hits persist across rescans (the backend PNG
+// cache on disk is keyed by exe-path hash, so blobs stay valid); misses are
+// cached with a TTL so hopeless rows don't respawn PowerShell every render.
+// `pruneIconCache` drops ids from previous scans to bound memory.
+const ICON_MISS_TTL_MS = 5 * 60 * 1000;
+type IconEntry = { v: string | null; at: number };
+const iconCache = new Map<string, IconEntry>();
+
+/** Cached icon: string = hit, null = known miss, undefined = unknown/expired. */
+export function readIconCache(id: string): string | null | undefined {
+  const e = iconCache.get(id);
+  if (!e) return undefined;
+  if (e.v === null && Date.now() - e.at > ICON_MISS_TTL_MS) {
+    iconCache.delete(id);
+    return undefined;
+  }
+  return e.v;
+}
+
+export function writeIconCache(id: string, v: string | null) {
+  iconCache.set(id, { v, at: Date.now() });
+  if (iconCache.size > 2000) {
+    const oldest = Array.from(iconCache.keys()).slice(0, 500);
+    for (const k of oldest) iconCache.delete(k);
+  }
+}
+
+export function pruneIconCache(validIds: string[]) {
+  const keep = new Set(validIds);
+  for (const k of Array.from(iconCache.keys())) {
+    if (!keep.has(k)) iconCache.delete(k);
+  }
+}
 
 export async function getAppIcon(id: string): Promise<string | null> {
-  if (iconCache.has(id)) return iconCache.get(id) ?? null;
+  const cached = readIconCache(id);
+  if (cached !== undefined) return cached;
   const v = await invoke<string | null>("get_app_icon", { id });
   // Only cache hits; misses may appear after a rescan
-  if (v) iconCache.set(id, v);
+  if (v) writeIconCache(id, v);
   return v;
+}
+
+/** Batched fetch: one invoke serves a whole visible list. Results are merged into the cache. */
+export async function getAppIcons(ids: string[]): Promise<IconResultDto[]> {
+  if (ids.length === 0) return [];
+  const res = await invoke<IconResultDto[]>("get_app_icons", { ids });
+  for (const r of res) {
+    writeIconCache(r.id, r.icon ?? null);
+  }
+  return res;
 }
 
 export function clearIconCache() {

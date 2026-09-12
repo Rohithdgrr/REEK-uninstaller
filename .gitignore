@@ -40,3 +40,5 @@ cobertura.xml
 # Backup files
 *.bak
 *.backup
+
+.forge-permissions.json

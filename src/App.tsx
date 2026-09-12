@@ -14,7 +14,7 @@ import { VideoVault } from "./components/VideoVault";
 import { DevCleaner } from "./components/DevCleaner";
 import { SuccessTickDialog } from "./components/SuccessTickDialog";
 import { useAppStore } from "./store/useAppStore";
-import { scanApplications, uninstallApplications, onUninstallProgressWithHeartbeat, getAppResources, clearIconCache, type AppResourceDto } from "./lib/tauri";
+import { scanApplications, uninstallApplications, onUninstallProgressWithHeartbeat, getAppResources, pruneIconCache, type AppResourceDto } from "./lib/tauri";
 import { Film, Package, LayoutGrid } from "lucide-react";
 
 export default function App() {
@@ -36,12 +36,14 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      // IDs are regenerated each scan — drop stale icon blobs so every row
-      // re-resolves its real high-quality icon for the fresh IDs.
-      clearIconCache();
       const data = await scanApplications();
       // Deletable-only (defense-in-depth; backend already filters).
-      setApps(data.filter((a) => a.can_uninstall !== false));
+      const list = data.filter((a) => a.can_uninstall !== false);
+      // Prune blobs for apps that vanished; KEEP the rest — the backend PNG
+      // cache is keyed by exe-path hash, so surviving rows keep their icons
+      // without re-spawning PowerShell after every scan.
+      pruneIconCache(list.map((a) => a.id));
+      setApps(list);
       setView("dashboard");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

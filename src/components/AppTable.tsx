@@ -1,7 +1,7 @@
 import { useEffect, useState, memo } from "react";
 import { ArrowUpDown, Package, Check, Minus, ChevronRight, Sparkles } from "lucide-react";
 import type { AppEntry, AppResourceDto } from "../lib/tauri";
-import { getAppIcon } from "../lib/tauri";
+import { getAppIcons, readIconCache } from "../lib/tauri";
 import { useAppStore } from "../store/useAppStore";
 
 export function AppTable({ apps, resources, onDetails }: { apps: AppEntry[]; resources?: Record<string, AppResourceDto>; onDetails?: (id: string) => void }) {
@@ -10,6 +10,35 @@ export function AppTable({ apps, resources, onDetails }: { apps: AppEntry[]; res
   const allChecked = visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
   const indeterminate = !allChecked && visibleIds.some((id) => selected.has(id));
   const resMap = resources ?? {};
+
+  // Batched icons: ONE get_app_icons invoke per list change instead of one
+  // get_app_icon invoke per row (which spawned N concurrent powershell.exe).
+  // null = known miss (initials), undefined = still loading (shimmer).
+  const [iconMap, setIconMap] = useState<Map<string, string | null>>(new Map());
+  useEffect(() => {
+    let cancelled = false;
+    const need = visibleIds.filter((id) => readIconCache(id) === undefined);
+    if (need.length === 0) return;
+    (async () => {
+      const merged = new Map<string, string | null>();
+      for (let i = 0; i < need.length; i += 100) {
+        const chunk = need.slice(i, i + 100);
+        try {
+          const res = await getAppIcons(chunk);
+          for (const r of res) merged.set(r.id, r.icon ?? null);
+        } catch {
+          // Transient invoke failure: leave rows unknown so a later list
+          // change retries, but show initials for this render.
+          for (const id of chunk) merged.set(id, null);
+        }
+      }
+      if (!cancelled) {
+        setIconMap((prev) => new Map([...prev, ...merged]));
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apps]);
 
   const handleSelect = (id: string) => toggleSelect(id);
   const handleSelectAll = () => toggleSelectAll(visibleIds);
@@ -60,6 +89,7 @@ export function AppTable({ apps, resources, onDetails }: { apps: AppEntry[]; res
               idx={idx}
               isSelected={selected.has(app.id)}
               res={resMap[app.id]}
+              icon={iconMap.get(app.id) ?? readIconCache(app.id)}
               onDetails={onDetails}
               onToggle={handleSelect}
             />
@@ -78,6 +108,7 @@ const AppRow = memo(function AppRow({
   idx,
   isSelected,
   res,
+  icon,
   onDetails,
   onToggle,
 }: {
@@ -85,6 +116,7 @@ const AppRow = memo(function AppRow({
   idx: number;
   isSelected: boolean;
   res?: AppResourceDto;
+  icon?: string | null;
   onDetails?: (id: string) => void;
   onToggle: (id: string) => void;
 }) {
@@ -118,7 +150,7 @@ const AppRow = memo(function AppRow({
       >
         {isSelected && <Check size={10} strokeWidth={3} />}
       </button>
-      <AppIcon app={app} running={running} selected={isSelected} />
+      <AppIcon app={app} icon={icon} running={running} selected={isSelected} />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 min-w-0">
           <p className="text-[14px] font-medium leading-none text-[#F5F0EB] truncate">{app.name}</p>
@@ -167,49 +199,37 @@ function formatDate(d?: string | null) {
   return d;
 }
 
-function AppIcon({ app, running, selected }: { app: AppEntry; running?: boolean; selected: boolean }) {
-  const [b64, setB64] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    // Always attempt the real icon — backend extracts on-demand (Jumbo
-    // 256px) even when scan-time extraction missed, so every visible row
-    // converges to a real high-quality icon instead of initials.
-    // icon_path is only a hint; never gate the fetch on it.
-    let cancelled = false;
-    setB64(null);
-    setFailed(false);
-    getAppIcon(app.id)
-      .then((v) => { if (!cancelled && v) setB64(v); else if (!cancelled) setFailed(true); })
-      .catch(() => { if (!cancelled) setFailed(true); });
-    return () => { cancelled = true; };
-  }, [app.id]);
+function AppIcon({ app, icon, running, selected }: { app: AppEntry; icon?: string | null; running?: boolean; selected: boolean }) {
+  const [imgBroken, setImgBroken] = useState(false);
+  useEffect(() => { setImgBroken(false); }, [app.id]);
 
   // 44px box: backend serves 256px Jumbo PNGs, so downscaling stays crisp
   // on retina. object-contain preserves glyph shape; p-[3px] keeps padding
   // tight so small glyphs stay legible.
   const base = "w-11 h-11 rounded-[12px] shrink-0 flex items-center justify-center overflow-hidden relative";
 
-  if (b64) {
+  // icon === undefined → batch hasn't resolved yet (shimmer).
+  // icon === string → real icon. icon === null (or broken img) → initials.
+  if (icon && !imgBroken) {
     return (
       <div className={`${base} border ${selected ? "border-[rgba(225,29,72,0.22)] shadow-[0_0_16px_rgba(225,29,72,0.12)]" : "border-[rgba(225,29,72,0.08)]"} bg-black`}>
         <img
-          src={`data:image/png;base64,${b64}`}
+          src={`data:image/png;base64,${icon}`}
           alt={`${app.name} icon`}
           draggable={false}
           decoding="async"
           loading="lazy"
           className="w-full h-full object-contain p-[3px]"
           style={{ imageRendering: "auto" } as React.CSSProperties}
-          onError={() => setFailed(true)}
+          onError={() => setImgBroken(true)}
         />
         {running && <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#11FF99] border-2 border-[#0A0A0A] shadow-[0_0_6px_rgba(17,255,153,0.7)]" />}
       </div>
     );
   }
 
-  // Loading placeholder: shimmer while the real icon resolves.
-  if (!failed) {
+  // Loading placeholder: shimmer while the batch resolves.
+  if (icon === undefined && !imgBroken) {
     return (
       <div className={`${base} bg-[#141414] border ${selected ? "border-[rgba(225,29,72,0.18)]" : "border-[rgba(225,29,72,0.06)]"}`} aria-hidden>
         <div className="w-full h-full animate-pulse bg-gradient-to-br from-[#1E1E1E] via-[#242424] to-[#1A1A1A] flex items-center justify-center text-[#4A4540] text-[11px] font-bold">

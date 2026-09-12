@@ -50,19 +50,22 @@ impl IconExtractor {
     }
 
     /// Find a reasonable icon source path (.exe/.ico/.dll/.png) for an app.
-    /// Covers DisplayIcon, exe_path, install_location directory search (2 levels deep),
-    /// and .ico fallback so that every installed app gets a real icon.
+    /// Covers DisplayIcon, App Paths registry lookup, exe_path,
+    /// install_location directory search (4 levels deep), and .ico fallback
+    /// so that every installed app gets a real icon.
     pub fn find_exe_path(app: &InstalledApp) -> Option<PathBuf> {
         // 1. DisplayIcon registry value (handles "path,index" and quoted paths) - most reliable.
+        // parse_icon_path expands %VAR% / $env:VAR itself.
         if let Some(icon) = app.metadata.get("display_icon") {
             if let Some(p) = Self::parse_icon_path(icon) {
                 return Some(p);
             }
-            // Try expanding env vars if raw path didn't exist (e.g. %ProgramFiles%\..)
-            let expanded = expand_env_vars(icon);
-            if let Some(p) = Self::parse_icon_path(&expanded) {
-                return Some(p);
-            }
+        }
+        // 1b. App Paths registry key (HKLM/HKCU ...\App Paths\<exe>).
+        // Covers apps whose DisplayIcon is missing but whose exe is
+        // registered for Start > Run (e.g. chrome.exe, code.exe).
+        if let Some(p) = Self::resolve_via_app_paths(app) {
+            return Some(p);
         }
         // 2. Install location is itself an exe file.
         if let Some(loc) = &app.install_location {
@@ -74,8 +77,9 @@ impl IconExtractor {
             {
                 return Some(loc.clone());
             }
-            // 2b. Install location is a directory: search for best exe inside (2 levels deep).
-            // This covers Chrome (chrome.exe), Brave (brave.exe), Docker (Docker Desktop.exe), etc.
+            // 2b. Install location is a directory: search for best exe inside (4 levels deep).
+            // This covers Chrome (chrome.exe), Brave (brave.exe), Docker (Docker Desktop.exe),
+            // and deeply nested layouts like <loc>\bin\win-x64\app.exe.
             if loc.is_dir() {
                 if let Some(best) = Self::find_best_exe_in_dir(&app.name, loc) {
                     return Some(best);
@@ -89,68 +93,124 @@ impl IconExtractor {
         // 3. Exe path derived from the uninstall string. Generic installer
         // binaries (MsiExec, unins*, setup*) carry no useful icon - filtered.
         if let Some(p) = app.metadata.get("exe_path") {
-            let path = PathBuf::from(p);
+            let path = PathBuf::from(expand_env_vars(p));
             if path.exists() && !poor_icon_source(&path) {
                 return Some(path);
             }
         }
         // 4. Last resort: accept even poor icon sources (unins*.exe) rather than no icon.
         if let Some(p) = app.metadata.get("exe_path") {
-            let path = PathBuf::from(p);
+            let path = PathBuf::from(expand_env_vars(p));
             if path.exists() {
                 return Some(path);
             }
         }
         // 5. Last resort: scan install_location dir without poor filter (if we skipped earlier due to poor).
-        // NOTE: never fall back to the directory itself — that yields a
-        // generic folder glyph for every icon-less app, which looks like a
-        // fake "real" icon. Returning None lets the UI show a tinted
-        // placeholder instead of a misleading folder.
         if let Some(loc) = &app.install_location {
             if loc.is_dir() {
                 if let Some(any_exe) = Self::find_any_exe_in_dir(loc) {
                     return Some(any_exe);
                 }
+                // 6. Absolute last resort: the install directory itself.
+                // ExtractAssociatedIcon on a directory yields the generic
+                // folder glyph — better than a fake-initials tile, and it
+                // still resolves to a real PNG via the shell path.
+                return Some(loc.clone());
             }
         }
         None
     }
 
-    /// Search a directory up to 2 levels deep for the best .exe to use as icon.
+    /// Resolve an executable via the App Paths registry keys, which map
+    /// `foo.exe` -> full install path for Start > Run lookup.
+    /// Candidate names come from the uninstall-derived exe stem, the install
+    /// directory name, and the display name.
+    fn resolve_via_app_paths(app: &InstalledApp) -> Option<PathBuf> {
+        let mut candidates: Vec<String> = Vec::new();
+        if let Some(exe) = app.metadata.get("exe_path") {
+            if let Some(stem) = PathBuf::from(exe)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+            {
+                if stem.to_ascii_lowercase().ends_with(".exe") {
+                    candidates.push(stem);
+                }
+            }
+        }
+        if let Some(loc) = &app.install_location {
+            if let Some(dir_name) = loc
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .filter(|s| !s.is_empty())
+            {
+                candidates.push(format!("{dir_name}.exe"));
+            }
+        }
+        let squashed: String = app
+            .name
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '-')
+            .collect();
+        if !squashed.is_empty() {
+            candidates.push(format!("{squashed}.exe"));
+        }
+        for name in candidates {
+            if let Some(p) = app_paths_lookup(&name) {
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    /// Search a directory up to 4 levels deep for the best .exe to use as icon.
     /// Prefers exes whose name contains the app name, then largest file.
     fn find_best_exe_in_dir(app_name: &str, dir: &Path) -> Option<PathBuf> {
-        let candidates = Self::collect_exes(dir, 2, true);
+        let candidates = Self::collect_exes(dir, 4, true);
         if candidates.is_empty() {
             return None;
         }
         Self::pick_best_exe(app_name, &candidates)
     }
     fn find_any_exe_in_dir(dir: &Path) -> Option<PathBuf> {
-        let candidates = Self::collect_exes(dir, 2, false);
+        let candidates = Self::collect_exes(dir, 4, false);
         if candidates.is_empty() {
             return None;
         }
         // Any exe at all, pick largest
-        candidates.into_iter().max_by_key(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
+        candidates
+            .into_iter()
+            .max_by_key(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
     }
     fn find_best_ico_in_dir(dir: &Path) -> Option<PathBuf> {
+        const MAX_DEPTH: usize = 4;
         let mut stack: Vec<(PathBuf, usize)> = vec![(dir.to_path_buf(), 0)];
         let mut best: Option<PathBuf> = None;
         while let Some((d, depth)) = stack.pop() {
-            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            let Ok(rd) = std::fs::read_dir(&d) else {
+                continue;
+            };
             for entry in rd.flatten() {
                 let Ok(ft) = entry.file_type() else { continue };
                 let path = entry.path();
                 if ft.is_dir() {
-                    if depth < 2 {
+                    if depth < MAX_DEPTH {
                         stack.push((path, depth + 1));
                     }
                 } else if ft.is_file() {
-                    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ico") || e.eq_ignore_ascii_case("png")) {
+                    if path.extension().is_some_and(|e| {
+                        e.eq_ignore_ascii_case("ico") || e.eq_ignore_ascii_case("png")
+                    }) {
                         // Prefer .ico over .png for shell extraction
-                        if best.is_none() || path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ico")) {
+                        if best.is_none()
+                            || path
+                                .extension()
+                                .is_some_and(|e| e.eq_ignore_ascii_case("ico"))
+                        {
                             best = Some(path.clone());
-                            if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ico")) {
+                            if path
+                                .extension()
+                                .is_some_and(|e| e.eq_ignore_ascii_case("ico"))
+                            {
                                 // keep searching but ico is best; still allow
                             }
                         }
@@ -164,7 +224,9 @@ impl IconExtractor {
         let mut out = Vec::new();
         let mut stack: Vec<(PathBuf, usize)> = vec![(dir.to_path_buf(), 0)];
         while let Some((d, depth)) = stack.pop() {
-            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            let Ok(rd) = std::fs::read_dir(&d) else {
+                continue;
+            };
             for entry in rd.flatten() {
                 let Ok(ft) = entry.file_type() else { continue };
                 let path = entry.path();
@@ -173,7 +235,10 @@ impl IconExtractor {
                         stack.push((path, depth + 1));
                     }
                 } else if ft.is_file() {
-                    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe")) {
+                    if path
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+                    {
                         if filter_poor && poor_icon_source(&path) {
                             continue;
                         }
@@ -190,9 +255,16 @@ impl IconExtractor {
         let mut scored: Vec<(u8, u64, PathBuf)> = candidates
             .iter()
             .map(|p| {
-                let stem = p.file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+                let stem = p
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
                 let norm_stem = stem.replace(' ', "").replace('-', "").replace('_', "");
-                let score = if norm_stem.contains(&norm_app) || norm_app.contains(&norm_stem) { 0u8 } else { 1u8 };
+                let score = if norm_stem.contains(&norm_app) || norm_app.contains(&norm_stem) {
+                    0u8
+                } else {
+                    1u8
+                };
                 let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
                 (score, size, p.clone())
             })
@@ -203,10 +275,14 @@ impl IconExtractor {
 
     /// Parse a DisplayIcon-style value into an existing path. Registry values
     /// look like `C:\path\app.exe`, `"C:\path\app.exe",0` or
-    /// `"C:\path\app.ico",-3`. Only a *trailing* numeric index is stripped so
-    /// paths containing commas survive.
+    /// `"%ProgramFiles%\app\app.exe",0`. `%VAR%` / `$env:VAR` segments are
+    /// expanded first; only a *trailing* numeric index (`,0`, `,-3`) is
+    /// stripped so paths containing commas survive.
     fn parse_icon_path(s: &str) -> Option<PathBuf> {
-        let t = s.trim();
+        // Expand env vars before splitting so a comma inside an expanded
+        // value can't be mistaken for an index separator.
+        let expanded = expand_env_vars(s);
+        let t = expanded.trim();
         let stripped = match t.rfind(',') {
             Some(pos) if is_index_suffix(&t[pos + 1..]) => t[..pos].trim(),
             _ => t,
@@ -412,12 +488,80 @@ impl Default for IconExtractor {
     }
 }
 
+/// Look up `name` (e.g. `chrome.exe`) in the App Paths registry keys.
+/// Returns the registered full path when it exists on disk.
+fn app_paths_lookup(name: &str) -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+        use winreg::RegKey;
+        let sub = format!(r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{name}");
+        for hive in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
+            let Ok(key) = RegKey::predef(hive).open_subkey(&sub) else {
+                continue;
+            };
+            // Default value holds the full exe path.
+            if let Ok(v) = key.get_value::<String, _>("") {
+                let p = PathBuf::from(v.trim_matches('"').trim());
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+            // "Path" value holds the install dir — rejoin the exe name.
+            if let Ok(dir) = key.get_value::<String, _>("Path") {
+                let p = PathBuf::from(dir.trim_matches('"').trim()).join(name);
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+        }
+        None
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = name;
+        None
+    }
+}
+
 fn expand_env_vars(s: &str) -> String {
-    // Expand %VAR% segments using environment variables (e.g. %ProgramFiles%).
+    // Expand %VAR% segments using environment variables (e.g. %ProgramFiles%),
+    // plus PowerShell-style $env:VAR segments.
     let mut out = String::new();
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '%' {
+        if c == '$' {
+            // $env:NAME ?
+            let lookahead: String = chars.clone().take(4).collect();
+            if lookahead.eq_ignore_ascii_case("env:") {
+                for _ in 0..4 {
+                    chars.next();
+                }
+                let mut var = String::new();
+                while let Some(&nc) = chars.peek() {
+                    if nc.is_alphanumeric() || nc == '_' {
+                        var.push(nc);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                if !var.is_empty() {
+                    if let Ok(val) = std::env::var(&var) {
+                        out.push_str(&val);
+                        continue;
+                    }
+                    if let Ok(val) = std::env::var(var.to_uppercase()) {
+                        out.push_str(&val);
+                        continue;
+                    }
+                }
+                out.push_str("$env:");
+                out.push_str(&var);
+                continue;
+            }
+            out.push(c);
+        } else if c == '%' {
             let mut var = String::new();
             while let Some(&nc) = chars.peek() {
                 if nc == '%' {
@@ -763,5 +907,57 @@ mod tests {
     #[test]
     fn test_ps_escape() {
         assert_eq!(ps_escape("it's"), "it''s");
+    }
+
+    #[test]
+    fn test_parse_icon_path_expands_env_vars() {
+        let dir = std::env::temp_dir().join(format!("reek_parse_env_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("app.exe");
+        std::fs::write(&file, b"x").unwrap();
+        std::env::set_var("REEK_TEST_ICON_DIR", &dir);
+        let sep = std::path::MAIN_SEPARATOR_STR;
+        let with_var = format!("%REEK_TEST_ICON_DIR%{sep}app.exe");
+        // Bare, quoted, and ",0"-suffixed forms all resolve.
+        assert_eq!(
+            IconExtractor::parse_icon_path(&with_var),
+            Some(file.clone())
+        );
+        assert_eq!(
+            IconExtractor::parse_icon_path(&format!("\"{with_var}\",0")),
+            Some(file.clone())
+        );
+        std::env::remove_var("REEK_TEST_ICON_DIR");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_expand_env_vars_powershell_style() {
+        std::env::set_var("REEK_TEST_PSVAR", r"C:\Some\Dir");
+        assert_eq!(
+            expand_env_vars("$env:REEK_TEST_PSVAR\\app.exe"),
+            r"C:\Some\Dir\app.exe"
+        );
+        std::env::remove_var("REEK_TEST_PSVAR");
+    }
+
+    #[test]
+    fn test_app_paths_lookup_miss() {
+        assert!(app_paths_lookup("definitely-not-a-real-app-xyz123.exe").is_none());
+    }
+
+    #[test]
+    fn test_find_best_exe_searches_deep() {
+        // exe nested 3 levels down must be found now (old depth was 2).
+        let dir = std::env::temp_dir().join(format!("reek_deep_exe_{}", std::process::id()));
+        let nested = dir.join("a").join("b").join("c");
+        std::fs::create_dir_all(&nested).unwrap();
+        let exe = nested.join("myapp.exe");
+        std::fs::write(&exe, b"x").unwrap();
+        assert_eq!(
+            IconExtractor::find_best_exe_in_dir("myapp", &dir),
+            Some(exe)
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "unorouter-live/glm-5.3-search:free",
+  "small_model": "unorouter-live/glm-5.3-search:free",
+  "server": {
+    "port": 4096,
+    "cors": ["http://localhost:1420", "http://localhost:1430"]
+  },
+  "provider": {
+    "unorouter-live": {
+      "name": "UnoRouter",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "apiKey": "{env:UNOROUTER_API_KEY}",
+        "baseURL": "https://api.unorouter.com/v1"
+      },
+      "models": {
+        "glm-5.3-flash:free": {},
+        "glm-5.3-flash-thinking:free": {},
+        "glm-5.3-flash-search:free": {},
+        "glm-5.3-search:free": {},
+        "glm-5.3-flash-think-search:free": {},
+        "deepseek-v4-flash:free": {},
+        "deepseek-r1:free": {},
+        "deepseek-coder:free": {},
+        "qwen3.5-397b-a17b:free": {},
+        "qwen-3.8:free": {},
+        "qwen3-coder-480b-a35b:free": {},
+        "gemma-4-31b-it:free": {},
+        "gemma-4-26b-a4b-it:free": {},
+        "nemotron-3-ultra-550b-a55b:free": {},
+        "nemotron-3.5-lightning:free": {},
+        "nemotron-3-super-120b-a12b:free": {},
+        "thinkingmachines/inkling:free": {},
+        "thinkingmachines/inkling-small:free": {},
+        "cohere/north-mini-code:free": {},
+        "poolside/laguna-xs-2.1:free": {},
+        "kimi-k3:free": {},
+        "liquid/lfm-2.5-2.6b:free": {},
+        "dots-studio/dots-3-note-preview:free": {},
+        "openai/gpt-oss-120b:free": {},
+        "gpt-5.5:free": {},
+        "minimax-m2.7:free": {},
+        "step-3.7-flash:free": {}
+      }
+    }
+  },
+  "skills": {
+    "paths": [".opencode/skills"]
+  }
+}

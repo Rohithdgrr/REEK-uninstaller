@@ -1,0 +1,33 @@
+{
+  "models": {
+    "claude-3.5-sonnet": {
+      "provider": "anthropic",
+      "apiKey": "${ANTHROPIC_API_KEY}",
+      "maxTokens": 4096,
+      "temperature": 0.7
+    },
+    "claude-3-opus": {
+      "provider": "anthropic",
+      "apiKey": "${ANTHROPIC_API_KEY}",
+      "maxTokens": 4096,
+      "temperature": 0.7
+    },
+    "gpt-4": {
+      "provider": "openai",
+      "apiKey": "${OPENAI_API_KEY}",
+      "maxTokens": 4096,
+      "temperature": 0.7
+    },
+    "gpt-4-turbo": {
+      "provider": "openai",
+      "apiKey": "${OPENAI_API_KEY}",
+      "maxTokens": 4096,
+      "temperature": 0.7
+    }
+  },
+  "defaultModel": "claude-3.5-sonnet",
+  "server": {
+    "port": 4096,
+    "cors": ["http://localhost:1420", "http://localhost:1430"]
+  }
+}
